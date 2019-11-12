@@ -29,3 +29,13 @@ mima_pz.txt
 src/atmos_param/socrates/src/trunk*
 test/.cache
 test/results.xml
+exp/experiments/
+postprocessing/old_mppnccombine_run.sh
+run/
+*.png
+src/extra/env/emps-hoff
+src/extra/model/socrates/path_names_old
+src/extra/python/isca/templates/mkmf.template.ifc.hoff
+src/extra/python/isca/templates/mkmf.template.ifc.hoff_orig
+src/extra/python/isca/templates/old_compile.sh
+src/shared/constants/constants_old.F90

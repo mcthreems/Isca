@@ -215,7 +215,6 @@ atmos_param/socrates/src/trunk/src/radiance_core/set_n_source_coeff.F90
 atmos_param/socrates/src/trunk/src/radiance_core/calc_surf_rad.F90
 atmos_param/socrates/src/trunk/src/radiance_core/solve_band_random_overlap.F90
 atmos_param/socrates/src/trunk/src/radiance_core/scale_absorb.F90
-atmos_param/socrates/src/trunk/src/radiance_core/calculate_density.F90
 atmos_param/socrates/src/trunk/src/radiance_core/calc_flux_ipa.F90
 atmos_param/socrates/src/trunk/src/radiance_core/opt_prop_ice_cloud.F90
 atmos_param/socrates/src/trunk/src/radiance_core/diff_planck_source_tbl.F90
@@ -483,8 +482,6 @@ atmos_param/socrates/src/trunk/src/radiation_control/set_moist_aerosol_propertie
 atmos_param/socrates/src/trunk/src/radiation_control/mcica_mod.F90
 atmos_param/socrates/src/trunk/src/radiation_control/cld_generator_mod.F90
 atmos_param/socrates/src/trunk/src/radiation_control/open_cloud_gen.F90
-atmos_param/socrates/src/trunk/src/um/out_nml.f90
-atmos_param/socrates/src/trunk/src/um/def_um_nml.f90
 atmos_param/socrates/src/trunk/src/modules_core/errormessagelength_mod.F90
 atmos_param/socrates/src/trunk/src/modules_core/dimensions_spec_ucf.F90
 atmos_param/socrates/src/trunk/src/modules_core/rad_ccf.F90
@@ -514,7 +511,6 @@ atmos_param/socrates/src/trunk/src/aux/output_radiance_cdl.f
 atmos_param/socrates/src/trunk/src/aux/fnc_density.f
 atmos_param/socrates/src/trunk/src/aux/calc_volume_fraction.f
 atmos_param/socrates/src/trunk/src/aux/calc_cdl_stride.f
-atmos_param/socrates/src/trunk/src/aux/interp.f
 atmos_param/socrates/src/trunk/src/aux/merge_pressure.f
 atmos_param/socrates/src/trunk/src/aux/angular_control_cdf.f
 atmos_param/socrates/src/trunk/src/aux/extinction_profile.f
@@ -592,3 +588,13 @@ atmos_param/socrates/interface/set_control.F90
 atmos_param/socrates/interface/socrates_calc.F90
 atmos_param/socrates/interface/socrates_interface.F90
 atmos_param/socrates/interface/soc_constants.f90
+atmos_param/socrates/src/trunk/src/radiance_core/spherical_trans_coeff.F90
+atmos_param/socrates/src/trunk/src/radiance_core/spherical_path.F90
+atmos_param/socrates/src/trunk/src/radiance_core/legendre_mod.F90
+atmos_param/socrates/src/trunk/src/radiance_core/calc_contrib_func.F90
+atmos_param/socrates/src/trunk/src/radiance_core/diffusivity_factor.F90
+atmos_param/socrates/src/trunk/src/radiance_core/spherical_solar_source.F90
+atmos_param/socrates/src/trunk/src/radiance_core/rescale_tau_csr.F90
+atmos_param/socrates/src/trunk/src/radiance_core/def_spherical_geometry.F90
+atmos_param/socrates/src/trunk/src/radiance_core/def_planck.F90
+atmos_param/socrates/src/trunk/src/radiance_core/circumsolar_fraction.F90

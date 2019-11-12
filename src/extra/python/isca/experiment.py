@@ -16,6 +16,24 @@ from isca.diagtable import DiagTable
 from isca.loghandler import Logger, clean_log_debug
 from isca.helpers import destructive, useworkdir, mkdir
 
+
+
+# create function for checking if data exists on remote server
+import subprocess,pipes,time
+
+def exists_remote(host1, host2, path):
+    """Test if a file exists at path on a host accessible with SSH."""
+    inlist = ['ssh'] + [host1] + ['ssh'] + [host2] + ['test -f {}'.format(pipes.quote(path))]
+    try:
+        status = subprocess.call(inlist)
+    except:
+        print('SSH Failure, will try again')
+        return False
+    if status == 0:
+        return True
+    if status == 1:
+        return False
+
 P = os.path.join
 
 class CompilationError(Exception):
@@ -201,6 +219,7 @@ class Experiment(Logger, EventEmitter):
                          (This uses a lot of data storage!)
 
         """
+        start_time = time.time()
 
         self.clear_rundir()
 
@@ -345,8 +364,16 @@ class Experiment(Logger, EventEmitter):
             self.write_diag_table(outdir)
             self.codebase.write_source_control_status(P(outdir, 'git_hash_used.txt'))
 
+        # Copy data to remote server
+        self.log.info('Data for run '+str(i)+' ready for copying to remote server')
+
         self.clear_rundir()
         self.emit('run:finished', self, i)
+        
+        fin_time = time.time()
+        tot_time = fin_time - start_time
+        self.log.info('Run Time: '+str(tot_time/60.)+' min')
+         
         return True
 
     def make_restart_archive(self, archive_file, restart_directory):

@@ -32,10 +32,11 @@ MODULE socrates_interface_mod
   USE read_control_mod
   USE def_control, ONLY: StrCtrl,  allocate_control,   deallocate_control
   USE def_spectrum
-  USE constants_mod, only: grav, rdgas, rvgas, cp_air
+  USE constants_mod, only: grav, rdgas, rvgas, cp_air, es0, omega
   USE fms_mod, only: stdlog, FATAL, WARNING, error_mesg
   USE interpolator_mod, only: interpolate_type  
   USE soc_constants_mod  
+  !USE idealized_moist_phys_mod, only: init_bucket_depth_land
 
   IMPLICIT NONE
 
@@ -414,6 +415,9 @@ write(stdlog_unit, socrates_rad_nml)
 
        PRINT*, 'Initialised Socrates v17.03'
        PRINT*, 'Stellar constant = ', stellar_constant
+       !PRINT*, 'Initial Bucket Depth = ', init_bucket_depth_land
+       PRINT*, 'ES0 = ', es0
+       PRINT*, 'OMEGA = ', omega
        PRINT*, 'Longwave spectral file = ', TRIM(control_lw%spectral_file), ' WITH ', n_soc_bands_lw, ' bands'
        PRINT*, 'Longwave hires spectral file = ', TRIM(control_lw_hires%spectral_file), ' WITH ', n_soc_bands_lw_hires, ' bands'
        PRINT*, 'Shortwave spectral file = ', TRIM(control_sw%spectral_file), ' WITH ', n_soc_bands_sw, ' bands'

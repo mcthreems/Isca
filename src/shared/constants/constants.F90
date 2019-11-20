@@ -90,7 +90,7 @@ real, public, parameter :: RHO0R   = 1.0/RHO0
 real, public, parameter :: RHO_CP  = RHO0*CP_OCEAN
 
 !------------ water vapor constants ---------------
-! <DATA NAME="ES0" TYPE="real" DEFAULT="1.0">
+! <DATA NAME="ES0_def" TYPE="real" DEFAULT="1.0">
 !   Humidity factor. Controls the humidity content of the atmosphere through
 !   the Saturation Vapour Pressure expression when using DO_SIMPLE.
 ! </DATA>
@@ -116,7 +116,7 @@ real, public, parameter :: RHO_CP  = RHO0*CP_OCEAN
 !   temp where fresh water freezes
 ! </DATA>
 
-!real, public, parameter :: ES0 = 1.0 added this to namelist variables
+real, public, parameter :: ES0_def = 1.0
 real, public, parameter :: RVGAS = 461.50
 real, public, parameter :: CP_VAPOR = 4.0*RVGAS
 real, public, parameter :: DENS_H2O = 1000.
@@ -265,9 +265,11 @@ real, public :: RDGAS  = EARTH_RDGAS
 real, public :: KAPPA = EARTH_KAPPA
 real, public :: CP_AIR = EARTH_CP_AIR
 logical :: earthday_multiple = .false.
-real, public :: ES0 = 1.0      ! putting this in the namelist so we can edit it
+!mmm adding these to constants namelist
+real, public :: ES0 = ES0_def
+real, public :: liq_dens = DENS_H2O
 
-namelist/constants_nml/ radius, grav, omega, orbital_period, pstd, pstd_mks, rdgas, kappa, solar_const, earthday_multiple, es0
+namelist/constants_nml/ radius, grav, omega, orbital_period, pstd, pstd_mks, rdgas, kappa, solar_const, earthday_multiple, es0, liq_dens
 
 !-----------------------------------------------------------------------
 ! version and tagname published

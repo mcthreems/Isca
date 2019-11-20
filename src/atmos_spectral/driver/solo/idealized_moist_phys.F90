@@ -6,9 +6,9 @@ module idealized_moist_phys_mod
   use fms_mod, only: open_namelist_file, close_file
 #endif
 
-use fms_mod, only: write_version_number, file_exist, close_file, stdlog, error_mesg, NOTE, FATAL, read_data, field_size, uppercase, mpp_pe
+use fms_mod, only: write_version_number, file_exist, close_file, stdlog, error_mesg, NOTE, FATAL, read_data, field_size, uppercase, mpp_pe, mpp_root_pe
 
-use           constants_mod, only: grav, rdgas, rvgas, cp_air, PSTD_MKS, dens_h2o !mj cp_air needed for rrtmg !s pstd_mks needed for pref calculation
+use           constants_mod, only: grav, rdgas, rvgas, cp_air, PSTD_MKS, liq_dens, pi !mj cp_air needed for rrtmg !s pstd_mks needed for pref calculation
 
 use        time_manager_mod, only: time_type, get_time, operator( + )
 
@@ -53,6 +53,12 @@ use tracer_manager_mod, only: get_number_tracers, query_method
 use  field_manager_mod, only: MODEL_ATMOS
 
 use rayleigh_bottom_drag_mod, only: rayleigh_bottom_drag_init, compute_rayleigh_bottom_drag
+
+! use tam_physics_mod,         only: tam_physics_init, tam_physics, tam_physics_end
+use tam_surface_mod,           only: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
+use tam_surface_flux_mod,      only: tam_surf_flux_2d   
+use tam_hydrology_mod,         only: tam_hydrology_init,tam_hydrology_end,tam_hydrology_driver
+
 
 #ifdef RRTM_NO_COMPILE
     ! RRTM_NO_COMPILE not included
@@ -107,6 +113,52 @@ logical :: lwet_convection = .false.
 logical :: do_bm = .false.
 logical :: do_ras = .false.
 
+!mmm Hydrology scheme options
+character(len=256) :: hydro_scheme = 'unset'  !< Use a specific hydrology scheme.  Valid options
+integer, parameter :: NO_HYDRO = 0,      &    !! are NONE, BUCKET_HYDRO, TAM_HYDRO
+                      BUCKET_HYDRO = 1,  &
+                      TAM_HYDRO = 2
+
+integer :: r_hydro_scheme = UNSET  ! the selected hydrology scheme
+
+! RG Add bucket
+logical :: bucket = .false. 
+integer :: future
+real :: init_bucket_depth = 1000. ! default large value
+real :: init_bucket_depth_land = 20. 
+real :: max_bucket_depth_land = 0.15 ! default from Manabe 1969
+real :: robert_bucket = 0.04   ! default robert coefficient for bucket depth LJJ
+real :: raw_bucket = 0.53       ! default raw coefficient for bucket depth LJJ
+! end RG Add bucket
+
+!mmm add TAM hydrology options (some of these are very Titan-oriented, so may not be necessary to include)
+logical :: do_surf_evap = .true.          !Do evaporation from surface?
+logical :: var_surf_prop = .false.        !Vary surface properties depending on liquid?
+logical :: convective_lakes = .false.     !Do convective lake adjustment?
+real    :: threshold_liq = -1.0   		  !Threshold for counting grid surface as liquid (-1 is a flag for 10*liq_dens)
+logical  :: init_lakes     = .false.      !Initialize observed lakes?
+logical  :: even_polar_liq = .false.      !With init_lakes=true, distributed polar liq
+real     :: wetland_latn   = 60.          !Northern wetland boundary
+real     :: wetland_lats   = -60.         !Southern wetland boundary
+logical  :: init_wetlands  = .false.      !Initialize low-lying wetlands?
+real     :: init_surf_liq  = 4.0          !If initializing, use X.X m
+real    :: init_liq_table = 10.0 !10 meters 
+real    :: porosity        = 0.50 !Porosity (%), fraction of available pore space
+real    :: evap_thresh     = 1.e-3 !Threshold (kg/m2) above which evaporation occurs
+logical :: do_gle          = .false.      !Do ground liquid evaporation where evap is damped
+logical :: do_liq_table = .true.      !Include subsurface representation?
+										 !Written such that one can do infiltration 
+										 !without keeping track of some liquid table height
+logical :: sin_z           = .false.       !Make table depth an idealized sine curve with latitude
+real    :: gle_alpha       = 1.0          ! GLE = min(PE,PE*exp(alpha*(Z-Z0))) where Z0 is elevation and Z is table depth 
+real    :: depth_scale     = 100.0        !scale for idealized sine table depth in meters
+logical :: negate_eq       = .false.      ! Set low-latitude surface to zero
+real :: vis_albedo    = 0.20    !Shortwave surface albedo over dry grid cell
+real :: liq_albedo    = 0.05    !Shortwave albedo over liquid grid cell
+real :: ir_albedo     = 0.0     !Longwave surface albedo
+logical  :: write_restart       = .true.
+!mmm end TAM hydrology options
+
 !s Radiation options
 logical :: two_stream_gray = .true.
 logical :: do_rrtm_radiation = .false.
@@ -131,16 +183,6 @@ character(len=256) :: land_option = 'none'
 character(len=256) :: land_file_name  = 'INPUT/land.nc'
 character(len=256) :: land_field_name = 'land_mask'
 
-! RG Add bucket
-logical :: bucket = .false. 
-integer :: future
-real :: init_bucket_depth = 1000. ! default large value
-real, public :: init_bucket_depth_land = 20. 
-real :: max_bucket_depth_land = 0.15 ! default from Manabe 1969
-real :: robert_bucket = 0.04   ! default robert coefficient for bucket depth LJJ
-real :: raw_bucket = 0.53       ! default raw coefficient for bucket depth LJJ
-! end RG Add bucket
-
 namelist / idealized_moist_phys_nml / turb, lwet_convection, do_bm, do_ras, roughness_heat,  &
                                       two_stream_gray, do_rrtm_radiation, do_damping,&
                                       mixed_layer_bc, do_simple,                     &
@@ -148,9 +190,14 @@ namelist / idealized_moist_phys_nml / turb, lwet_convection, do_bm, do_ras, roug
                                       land_option, land_file_name, land_field_name,   & !s options for idealised land
                                       land_roughness_prefactor,               &
                                       gp_surface, convection_scheme,          &
-                                      bucket, init_bucket_depth, init_bucket_depth_land, & !RG Add bucket 
+                                      init_bucket_depth, init_bucket_depth_land, & !RG Add bucket 
                                       max_bucket_depth_land, robert_bucket, raw_bucket, &
-                                      do_socrates_radiation
+                                      do_socrates_radiation, hydro_scheme, &
+                                      do_surf_evap, var_surf_prop, convective_lakes, &!mmm tam hydro
+                                      threshold_liq, init_lakes, even_polar_liq, wetland_latn, &
+                                      wetland_lats, init_wetlands, init_surf_liq, init_liq_table, &
+                                      porosity, evap_thresh, do_gle, do_liq_table, sin_z, gle_alpha, &
+                                      depth_scale, negate_eq, vis_albedo, liq_albedo, ir_albedo
 
 
 integer, parameter :: num_time_levels = 2 !RG Add bucket - number of time levels added to allow timestepping in this module
@@ -271,16 +318,29 @@ integer ::           &
      id_cin,	     & 	     
      id_flux_u,      & ! surface flux of zonal mom.
      id_flux_v,      & ! surface flux of meridional mom.
-     id_temp_2m,      & !mp586 for 10m winds and 2m temp
+     id_temp_2m,     & !mp586 for 10m winds and 2m temp
      id_u_10m, 	     & !mp586 for 10m winds and 2m temp
      id_v_10m,       & !mp586 for 10m winds and 2m temp
      id_q_2m,        & ! Add 2m specific humidity
      id_rh_2m          ! Add 2m relative humidity
+     
+
+!mmm tam hydro variables
+integer  :: id_sens, id_evap, id_sub, id_infil, id_gle, id_res, id_dtd, &
+            id_dis, id_rech, id_table, id_height, id_run, & 
+            id_totatm, id_totsurf, id_totsub, id_sc, id_tsfc, id_qsfc     
 
 integer, allocatable, dimension(:,:) :: convflag ! indicates which qe convection subroutines are used
-real,    allocatable, dimension(:,:) :: rad_lat, rad_lon
+real,    allocatable, dimension(:,:) :: rad_lat, rad_lon, albedoi
 real,    allocatable, dimension(:) :: pref, p_half_1d, ln_p_half_1d, p_full_1d,ln_p_full_1d !s pref is a reference pressure profile, which in 2006 MiMA is just the initial full pressure levels, and an extra level with the reference surface pressure. Others are only necessary to calculate pref.
 real,    allocatable, dimension(:,:) :: capeflag !s Added for Betts Miller scheme (rather than the simplified Betts Miller scheme).
+
+!real, dimension(:,:,:), allocatable, save  ::  diff_m_new, diff_t_new
+real, dimension(:,:,:), allocatable, save  ::  surf_liq
+real, dimension(:,:,:),   allocatable, save  ::  run_res,liq_table,height   !SPF
+real, dimension(:,:),   allocatable, save  ::  topo     !SPF
+logical  :: first_physics_call    = .true.
+!mmm end tam hydro variables
 
 type(surf_diff_type) :: Tri_surf ! used by gcm_vert_diff
 	
@@ -320,6 +380,12 @@ logical, dimension(:), allocatable :: tracers_in_ras
 
 character(len=80)  :: scheme
 ! End Added for RAS
+
+!mmm added for tam hydro
+real, dimension(size(z_surf,1),size(z_surf,2)) :: dtd,surf_liq_begin,liq_table_begin,height_begin
+integer :: nt, j
+character(len=128) :: filename
+!mmm end added for tam hydro
 
 if(module_is_initialized) return
 
@@ -387,15 +453,15 @@ else if(uppercase(trim(convection_scheme)) == 'UNSET') then
   if (lwet_convection) then
     r_conv_scheme = SIMPLE_BETTS_CONV
     call error_mesg('idealized_moist_phys','Using Frierson Quasi-Equilibrium convection scheme.', NOTE)
-  end if
+  endif
   if (do_bm) then
     r_conv_scheme = FULL_BETTS_MILLER_CONV
     call error_mesg('idealized_moist_phys','Using Betts-Miller convection scheme.', NOTE)
-  end if
+  endif
   if (do_ras) then
     r_conv_scheme = RAS_CONV
     call error_mesg('idealized_moist_phys','Using  relaxed Arakawa Schubert convection scheme.', NOTE)
-  end if    
+  endif    
 else
   call error_mesg('idealized_moist_phys','"'//trim(convection_scheme)//'"'//' is not a valid convection scheme.'// &
       ' Choices are NONE, SIMPLE_BETTS, FULL_BETTS_MILLER, RAS, DRY', FATAL)
@@ -560,17 +626,36 @@ if(trim(land_option) .eq. 'input') then
 
 endif
 
-!RG Add bucket - initialise bucket depth
-if(bucket) then
-where(land)
-  bucket_depth(:,:,1)  = init_bucket_depth_land
-  bucket_depth(:,:,2)  = init_bucket_depth_land
-end where
-endif
-!RG end Add bucket
-
 !s end option to alter surface roughness length over land
 
+!mmm Choose hydro scheme
+if(uppercase(trim(hydro_scheme)) == 'NONE') then
+  r_hydro_scheme = NO_HYDRO
+  call error_mesg('idealized_moist_phys','No hydrology scheme used.', NOTE)
+
+else if(uppercase(trim(hydro_scheme)) == 'BUCKET_HYDRO') then
+  r_hydro_scheme = BUCKET_HYDRO
+  call error_mesg('idealized_moist_phys','Using Bucket hydrology scheme.', NOTE)
+  bucket = .true.
+  !RG Add bucket - initialise bucket depth
+  where(land)
+    bucket_depth(:,:,1)  = init_bucket_depth_land
+    bucket_depth(:,:,2)  = init_bucket_depth_land
+  end where
+  !RG end Add bucket
+  
+else if(uppercase(trim(hydro_scheme)) == 'TAM_HYDRO') then
+  r_hydro_scheme = TAM_HYDRO
+  if(threshold_liq .eq. -1.0) then
+  	threshold_liq = liq_dens * 10.
+  endif
+  call error_mesg('idealized_moist_phys','Using TAM hydrology scheme.', NOTE)
+  
+else
+  call error_mesg('idealized_moist_phys','"'//trim(hydro_scheme)//'"'//' is not a valid hydrology scheme.'// &
+      ' Choices are NONE, BUCKET, TAM_HYDRO', FATAL)
+endif
+!mmm end choose hydro scheme
 
 if (gp_surface) then
 call rayleigh_bottom_drag_init(get_axis_id(), Time)
@@ -589,7 +674,7 @@ endif
 
       endif
 
-if(mixed_layer_bc) then
+if(mixed_layer_bc .AND. r_hydro_scheme .ne. TAM_HYDRO) then
   ! need an initial condition for the mixed layer temperature
   ! may be overwritten by restart file
   ! choose an unstable initial condition to allow moisture
@@ -597,7 +682,7 @@ if(mixed_layer_bc) then
   t_surf = t_surf_init + 1.0
 
   call mixed_layer_init(is, ie, js, je, num_levels, t_surf, bucket_depth, get_axis_id(), Time, albedo, rad_lonb_2d(:,:), rad_latb_2d(:,:), land, bucket) ! t_surf is intent(inout) !s albedo distribution set here.
-  
+
 elseif(gp_surface) then
   albedo=0.0
   call error_mesg('idealized_moist_phys','Because gp_surface=.True., setting albedo=0.0', NOTE)
@@ -611,7 +696,7 @@ if(turb) then
 ! gcm_vert_diff_down) because the variable sphum is not initialized
 ! otherwise in the vert_diff module
    call vert_diff_init (Tri_surf, ie-is+1, je-js+1, num_levels, .true., do_virtual) !s do_conserve_energy is hard-coded in.
-end if
+endif
 
 call lscale_cond_init()
 
@@ -634,7 +719,9 @@ id_flux_u = register_diag_field(mod_name, 'flux_u', &
 id_flux_v = register_diag_field(mod_name, 'flux_v', &
      axes(1:2), Time, 'Meridional momentum flux', 'Pa')
 
-if(bucket) then
+select case(r_hydro_scheme)
+
+case(BUCKET_HYDRO)
   id_bucket_depth = register_diag_field(mod_name, 'bucket_depth',            &         ! RG Add bucket
        axes(1:2), Time, 'Depth of surface reservoir', 'm')
   id_bucket_depth_conv = register_diag_field(mod_name, 'bucket_depth_conv',  &         ! RG Add bucket
@@ -643,7 +730,67 @@ if(bucket) then
        axes(1:2), Time, 'Tendency of bucket depth induced by Condensation', 'm/s')
   id_bucket_depth_lh = register_diag_field(mod_name, 'bucket_depth_lh',      &         ! RG Add bucket
        axes(1:2), Time, 'Tendency of bucket depth induced by LH', 'm/s')
-endif
+
+case(TAM_HYDRO)
+!mmm TAM Hydrology:
+ 
+
+  id_run = register_diag_field (mod_name, 'run', axes(1:2), Time, &
+                   'Surface runoff into reservoir', 'kg/m2/s',      &
+                   missing_value=missing_value     )
+  id_sub = register_diag_field (mod_name, 'sub', axes(1:2), Time, &
+                   'Subsurface flow', 'kg/m2/s',      &
+                   missing_value=missing_value     )
+  id_dtd = register_diag_field(mod_name, 'dtd', axes(1:2), Time, &
+                   'Topography used for runoff', 'm', &
+                   missing_value=missing_value    )
+  id_infil = register_diag_field (mod_name, 'infil', axes(1:2), Time, &
+                   'Infiltration', 'kg/m2/s',      &
+                   missing_value=missing_value     ) 
+  id_gle = register_diag_field (mod_name, 'gle', axes(1:2), Time, &
+                   'Groundliquid evap from table', 'kg/m2/s',      &
+                   missing_value=missing_value     ) 
+  id_res = register_diag_field (mod_name, 'res', axes(1:2), Time, &
+                   'Runoff reservoir', 'm',      &
+                   missing_value=missing_value     )
+  id_dis = register_diag_field (mod_name, 'dis', axes(1:2), Time, &
+                   'Discharge', 'kg/m2/s',      &
+                  missing_value=missing_value     )
+  id_rech = register_diag_field (mod_name, 'recharge', axes(1:2), Time, &
+                   'Recharge of surface from table', 'kg/m2/s',      &
+                  missing_value=missing_value     )
+  id_table = register_diag_field (mod_name, 'table', axes(1:2), Time, &
+                   'Liquid table', 'm',      &
+                   missing_value=missing_value     )
+  id_height = register_diag_field (mod_name, 'height', axes(1:2), Time, &
+                   'Height', 'm',      &
+                   missing_value=missing_value     )
+  id_sens = register_diag_field ( mod_name, 'sens', axes(1:2), Time, &
+                  'Sensible heat flux', 'W/m2',       &
+                   missing_value=missing_value     )
+  id_evap = register_diag_field ( mod_name, 'evap', axes(1:2), Time, &
+                  'Surface evaporation', 'kg/m2/s',       &
+                   missing_value=missing_value     )
+  id_tsfc = register_diag_field ( mod_name, 'tsurf', axes(1:2), Time, &
+                  'Surface temperature', 'K', &
+                  missing_value=missing_value)
+  id_qsfc = register_diag_field ( mod_name, 'qsurf', axes(1:2), Time, &
+                  'Surface liquid', 'm', &
+                  missing_value=missing_value)
+  ! id_totatm = register_diag_field(mod_name,'tot_atm', Time, &
+!                    'Total area-weighted atmospheric methane','kg', &
+!                    missing_value=missing_value     )
+!   id_totsurf = register_diag_field(mod_name,'tot_surf', Time, &
+!                    'Total area-weighted surface methane','kg', &
+!                    missing_value=missing_value     )
+!   id_totsub = register_diag_field(mod_name,'tot_sub', Time, &
+!                    'Total area-weighted subsurface methane','kg', &
+!                    missing_value=missing_value     )
+!   id_sc = register_diag_field (mod_name, 'sc', axes(1:2), Time, &
+!                    'Surface liquid correction', 'm',      &
+!                   missing_value=missing_value     )
+
+end select
 
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 !!!!!!! added by mp586 for 10m winds and 2m temperature add mo_profile()!!!!!!!!
@@ -728,6 +875,102 @@ end select
 !endif
 
 
+!mmm Select hydro cases
+select case(r_hydro_scheme)
+
+case(TAM_HYDRO)
+	call tam_hydrology_init(z_surf,dtd,surf_liq_begin,liq_table_begin,height_begin, &
+	                    init_surf_liq,init_liq_table,porosity,rad_lat,rad_lon)
+	                    
+	if (id_dtd > 0) used = send_data(id_dtd, dtd, Time)
+	
+	! allocate ( diff_m_new(is:ie,js:je,nlevels)  ) !mmm these are for a diffusion_smooth option, could be added later
+ 	! allocate ( diff_t_new(is:ie,js:je,nlevels)  )
+	allocate ( surf_liq(is:ie,js:je,num_time_levels) )
+	allocate ( run_res(is:ie,js:je,num_time_levels) )
+	allocate ( liq_table(is:ie,js:je,num_time_levels) )
+	allocate ( height(is:ie,js:je,num_time_levels) ) 
+	allocate ( topo(is:ie,js:je) )
+	allocate ( albedoi(is:ie, js:je) )
+
+	topo = dtd
+
+	call mpp_get_global_domain(grid_domain, xsize=global_num_lon, ysize=global_num_lat)
+
+	!mmm read from hydrology restart files
+	filename= 'INPUT/surface.res.nc' 
+	call nullify_domain()
+	if (file_exist( trim( filename ) ) ) then
+		if((mpp_pe() == mpp_root_pe())) print *,'tam_physics module: Reading surface restart file: ',trim(filename)
+		call read_data( trim( filename ), 'diffm', diff_m, grid_domain)
+		call read_data( trim( filename ), 'difft', diff_t, grid_domain)
+		do nt = 1,num_time_levels
+		  call read_data(trim(filename),'surf_liq',surf_liq(:,:,nt),grid_domain,timelevel=nt)
+		  call read_data(trim(filename),'run_res',run_res(:,:,nt),grid_domain,timelevel=nt)
+		end do
+	else if (file_exist( trim( 'INPUT/surface_norun.res.nc' ) ) ) then
+		filename = 'INPUT/surface_norun.res.nc'
+		if((mpp_pe() == mpp_root_pe())) print *,'tam_physics module: Reading physics restart file: ',trim(filename)
+		call read_data( trim( filename ), 'diffm', diff_m, grid_domain)
+		call read_data( trim( filename ), 'difft', diff_t, grid_domain)
+		do nt = 1,num_time_levels
+		  call read_data(trim(filename),'surf_liq',surf_liq(:,:,nt),grid_domain,timelevel=nt)
+		end do
+		run_res = 0.0
+	else
+		diff_m= 1.e-3
+		diff_t= 1.e-3
+		run_res = 0.0
+		do nt = 1,num_time_levels
+		  surf_liq(:,:,nt) = surf_liq_begin
+		end do
+		if((mpp_pe() == mpp_root_pe())) &
+		  print *,'Initial surface liquid: ', maxval(surf_liq), ' kg/m2'           
+		if ((init_lakes) .and. (init_wetlands)) &
+		  call error_mesg('tam_physics', &
+						  'init_lakes and init_wetlands cannot both be .true.', FATAL)
+
+		if ((do_gle) .and. (.not.sin_z) .and. (.not.do_liq_table)) &
+		  call error_mesg('tam_physics', &
+						  'Trying to do realistic groundwater evap without liquid table', FATAL)
+
+		! if (init_lakes) then
+! 		  call lakes_init(surf_liq,rad_lon_2d,rad_lat_2d) 
+! 		else if (init_wetlands) then
+! 		  call wetlands_init(surf_liq,rad_lon_2d,rad_lat_2d,zsurf)
+! 		endif
+
+		if((mpp_pe() == mpp_root_pe())) then
+		  if (var_surf_prop) print *, 'Surface properties depend on liquid content'
+		endif
+	endif
+
+	if (negate_eq) then
+	 do j=1,size(rad_lat,2)
+		if ((rad_lat(1,j)*180./pi .lt. 20) .and. (rad_lat(1,j)*180./pi .gt. -45)) surf_liq(:,j,:) = 0.0
+	 end do
+	endif  
+
+	filename= 'INPUT/subsurface.res.nc'
+	call nullify_domain()
+	if (file_exist( trim( filename ) ) ) then
+	 if((mpp_pe() == mpp_root_pe())) print *,'tam_physics module: Reading subsurface restart file: ',trim(filename)
+	 do nt = 1,num_time_levels
+	   call read_data(trim(filename),'liq_table',liq_table(:,:,nt),grid_domain,timelevel=nt)
+	   call read_data(trim(filename),'height',height(:,:,nt),grid_domain,timelevel=nt)
+	 end do
+	else
+	 do nt = 1,num_time_levels
+	   liq_table(:,:,nt) = liq_table_begin
+	   height(:,:,nt) = height_begin
+	 end do
+	endif
+	
+	call tam_surface_init (rad_lon, rad_lat, axes, Time)  !mmm Initialize surface
+	
+end select
+!mmm end select hydro cases
+
 if(two_stream_gray) call two_stream_gray_rad_init(is, ie, js, je, num_levels, get_axis_id(), Time, rad_lonb_2d, rad_latb_2d, dt_real)
 
 #ifdef RRTM_NO_COMPILE
@@ -796,6 +1039,14 @@ integer, intent(in) , dimension(:,:),   optional :: kbot
 real, dimension(1,1,1):: tracer, tracertnd
 integer :: nql, nqi, nqa   ! tracer indices for stratiform clouds
 
+!mmm variables for tam_hydro scheme
+integer :: i, j
+integer :: kd
+real, dimension(size(tg(:,:,:,previous),1),size(tg(:,:,:,previous),2)) :: ps, zkd
+real, dimension(size(tg(:,:,:,previous),1),size(tg(:,:,:,previous),2)) :: cd_m, cd_t, cd_q, wind
+real, dimension(size(tg(:,:,:,previous),1),size(tg(:,:,:,previous),2)) :: runoff,infiltration,gle,discharge,recharge,run_out,subflow,evap_scale,surf_liq_temp,surf_corr
+real                                     :: gle_A,depth_below
+
 if(current == previous) then
    delta_t = dt_real
 else
@@ -808,6 +1059,18 @@ if (bucket) then
 endif
 
 rain = 0.0; snow = 0.0; precip = 0.0
+
+!mmm tam hydro initial t_surf
+if(r_hydro_scheme .eq. TAM_HYDRO) then
+	albedo    = vis_albedo
+	albedoi   = ir_albedo
+	
+	t_surf(:,:)    = tam_tgrnd(:,:,1)
+	
+	if (var_surf_prop) then
+	where (surf_liq(:,:,current) .gt. threshold_liq) albedo = liq_albedo
+	endif
+endif
 
 select case(r_conv_scheme)
 
@@ -829,7 +1092,7 @@ case(SIMPLE_BETTS_CONV)
 
    conv_dt_tg = conv_dt_tg/delta_t
    conv_dt_qg = conv_dt_qg/delta_t
-   depth_change_conv = rain/dens_h2o     ! RG Add bucket
+   depth_change_conv = rain/liq_dens     ! RG Add bucket
    rain       = rain/delta_t
    precip     = rain
 
@@ -858,7 +1121,7 @@ case(FULL_BETTS_MILLER_CONV)
 
    conv_dt_tg = conv_dt_tg/delta_t
    conv_dt_qg = conv_dt_qg/delta_t
-   depth_change_conv = rain/dens_h2o     ! RG Add bucket
+   depth_change_conv = rain/liq_dens     ! RG Add bucket
    rain       = rain/delta_t
    precip     = rain
 
@@ -937,7 +1200,9 @@ if (r_conv_scheme .ne. DRY_CONV) then
 
   cond_dt_tg = cond_dt_tg/delta_t
   cond_dt_qg = cond_dt_qg/delta_t
-  depth_change_cond = rain/dens_h2o     ! RG Add bucket
+  if (r_hydro_scheme .eq. BUCKET) then
+  	depth_change_cond = rain/liq_dens     ! RG Add bucket
+  endif
   rain       = rain/delta_t
   snow       = snow/delta_t
   precip     = precip + rain + snow
@@ -965,7 +1230,7 @@ if(two_stream_gray) then
                        net_surf_sw_down(:,:),  &
                        surf_lw_down(:,:), albedo, &
                        grid_tracers(:,:,:,previous,nsphum))
-end if
+endif
 
 if(.not.mixed_layer_bc) then
 
@@ -976,10 +1241,10 @@ if(.not.mixed_layer_bc) then
 
 !!$! surface temperature has same potential temp. as lowest layer:
 !!$  t_surf = surface_temperature(tg(:,:,:,previous), p_full(:,:,:,current), p_half(:,:,:,current))
-end if
+endif
 
 
-if(.not.gp_surface) then 
+if(.not.gp_surface .AND. r_hydro_scheme .ne. TAM_HYDRO) then !mmm added flag to avoid this if using the tam_hydro scheme
   call surface_flux(                                                        &
                   tg(:,:,num_levels,previous),                              &
  grid_tracers(:,:,num_levels,previous,nsphum),                              &
@@ -1065,7 +1330,7 @@ if(two_stream_gray) then
                      t_surf(:,:),            &
                      tg(:,:,:,previous),     &
                      dt_tg(:,:,:), albedo)
-end if
+endif
 
 #ifdef RRTM_NO_COMPILE
     if (do_rrtm_radiation) then
@@ -1094,7 +1359,7 @@ if (do_socrates_radiation) then
 endif
 #endif
 
-if(gp_surface) then
+if(gp_surface .AND. r_hydro_scheme .ne. TAM_HYDRO) then
 
 	call gp_surface_flux (dt_tg(:,:,:), p_half(:,:,:,current), num_levels)
 	
@@ -1110,8 +1375,90 @@ if(gp_surface) then
 	if(id_diss_heat_ray > 0) used = send_data(id_diss_heat_ray, diss_heat_ray, Time)
 endif
 
+!-----------------------------------------------------------------------
+!mmm Call tam hydro surface fluxes
+!-----------------------------------------------------------------------
+select case(r_hydro_scheme)
+
+case(TAM_HYDRO)
+	kd = size(p_full,3)
+	ps(:,:) = p_half(:,:,size(p_half,3),previous)
+	zkd(:,:)   = (ps(:,:)-p_full(:,:,kd,previous)) / (grav*(ps(:,:)/( rdgas*tg(:,:,kd,previous))))
+
+	call tam_surf_flux_2d ( tg(:,:,kd,previous), grid_tracers(:,:,kd,previous,1), &
+					  ug(:,:,kd,previous), vg(:,:,kd,previous), &
+					  p_full(:,:,kd,previous), zkd, ps, t_surf, surf_liq(:,:,current),&
+					  rough_mom, rough_heat, rough_moist, gust, flux_t, flux_q, flux_u, &
+					  flux_v, drag_m, drag_t, drag_q, w_atm, ustar, bstar, qstar,  &
+					  dhdt_surf, dedt_surf, dedq_surf,                &
+					  dhdt_atm, dedq_atm, dtaudu_atm, dtaudv_atm,    &
+					  is, js, delta_t, Time, do_gle, evap_thresh)
 
 
+	if (.not. do_surf_evap) then
+	flux_q      = 0.0
+	dedt_surf = 0.0
+	dedq_surf = 0.0
+	dedq_atm = 0.0
+	qstar    = 0.0
+	endif
+
+	!Determine groundliquid evaporation (GLE)
+
+	if (do_gle) then
+
+	gle_A = gle_alpha
+	evap_scale = 1.0
+
+	if (sin_z) then !mmm table depth is idealized sin curve of latitude
+	do i = 1,size(rad_lon,1)
+	 do j = 1,size(rad_lat,2) 
+	  depth_below = (0.5 + 0.5*cos(2.5*rad_lat(1,j)))*depth_scale
+	  if (abs(rad_lat(1,j)*180./pi) .lt. 70) then
+		 evap_scale(i,j) = max(0.0 , min(1.0,exp(-gle_A*depth_below)))
+	  else
+		 evap_scale(i,j) = 1.0
+	  endif
+
+	  if (first_physics_call) then
+		print *,'rad_lat,depth_below,damp param: ',rad_lat(1,j)*180./pi,depth_below,evap_scale(i,j)
+	  endif
+
+	 end do
+	end do
+	else if (do_liq_table) then !If doing liquid table 
+	do i = 1,size(rad_lon,1)
+	 do j = 1,size(rad_lat,2)
+
+	  if (surf_liq(i,j,current) .gt. evap_thresh) then
+		evap_scale(i,j) = 1.0
+	  else  !Doing GLE
+		evap_scale(i,j) = min(1.0,exp(gle_A * (height(i,j,current) - topo(i,j)))) 
+	  endif
+
+	  if (first_physics_call) then
+		print *,'rad_lat,liq,depth_below,damp param: ',rad_lat(1,j)*180./pi,surf_liq(i,j,current), &
+			  max(0.0,topo(i,j) - height(i,j,current)),evap_scale(i,j)
+	  endif
+
+	 end do
+	end do
+	endif 
+  
+	flux_q = flux_q * evap_scale   
+	qstar = qstar * evap_scale
+
+
+	endif
+
+	if (id_sens > 0) used = send_data ( id_sens, flux_t, Time, is, js )
+	if (id_evap > 0) used = send_data ( id_evap, flux_q, Time, is, js )
+	if (id_flux_u > 0) used = send_data ( id_flux_u, flux_u, Time, is, js )
+
+end select
+!-----------------------------------------------------------------------
+!mmm End call surface fluxes
+!-----------------------------------------------------------------------
 
 !----------------------------------------------------------------------
 !    Copied from MiMA physics_driver.f90
@@ -1130,7 +1477,6 @@ if(do_damping) then
                              dt_tracers(:,:,:,nsphum), dt_tracers(:,:,:,:),             &
                              z_pbl) !s have taken the names of arrays etc from vert_turb_driver below. Watch ntp from 2006 call to this routine?
 endif
-
 
 
 
@@ -1202,7 +1548,7 @@ if(turb) then
 !
 ! update surface temperature
 !
-   if(mixed_layer_bc) then	
+   if(mixed_layer_bc .AND. r_hydro_scheme .ne. TAM_HYDRO) then	
    call mixed_layer(                                                       &
                               Time, Time+Time_step,                        &
                               t_surf(:,:),                                 & ! t_surf is intent(inout)
@@ -1220,6 +1566,19 @@ if(turb) then
                             dhdt_atm(:,:),                                 &
                             dedq_atm(:,:),                                 &
                               albedo(:,:))
+   
+   !mmm use TAM calculation for Tri_surf, t_surf, and tgrnd
+   else if(r_hydro_scheme .eq. TAM_HYDRO) then
+		call tam_surf_temp (is, js, delta_t, Time, surf_liq(:,:,current), albedoi, &
+					  flux_r, flux_t, flux_q, dhdt_surf, dedt_surf, dedq_surf,   &
+					  dhdt_atm, dedq_atm, Tri_surf, var_surf_prop,        &
+					  threshold_liq, liq_dens, convective_lakes,          & 
+					  do_liq_table, height(:,:,current), topo,porosity)
+			  
+		t_surf(:,:) = tam_tgrnd(is:ie,js:je,1)
+
+		if (id_tsfc > 0) used = send_data (id_tsfc, t_surf, Time, is, js)
+   
    endif
 
    call gcm_vert_diff_up (1, 1, delta_t, Tri_surf, dt_tg(:,:,:), dt_tracers(:,:,:,nsphum), dt_tracers(:,:,:,:))
@@ -1235,7 +1594,13 @@ endif ! if(turb) then
    call rh_calc (p_full(:,:,:,previous),tg_tmp,qg_tmp,RH)
    if(id_rh >0) used = send_data(id_rh, RH*100., Time)
 
+!-----------------------------------------------------------------------
+!mmm Do hydrology
+!-----------------------------------------------------------------------
 
+select case(r_hydro_scheme)
+
+case(BUCKET_HYDRO)
 ! RG Add bucket
 ! Timestepping for bucket. 
 ! NB In tapios github, all physics is still in atmosphere.F90 and this leapfrogging is done there. 
@@ -1243,57 +1608,104 @@ endif ! if(turb) then
 ! Therefore define a future variable locally, but do not feedback any changes to timestepping variables upstream, so as to avoid messing with the model's overall timestepping.
 ! Bucket diffusion has been cut for this version - could be incorporated later.
 
-if(bucket) then
+	if(previous == current) then
+	future = num_time_levels + 1 - current
+	else
+	future = previous
+	endif
 
-  if(previous == current) then
-    future = num_time_levels + 1 - current
-  else
-    future = previous
-  endif
+	! bucket time tendency
+	dt_bucket = depth_change_cond + depth_change_conv - depth_change_lh
+	!change in bucket depth in one leapfrog timestep [m]                                 
 
-   ! bucket time tendency
-   dt_bucket = depth_change_cond + depth_change_conv - depth_change_lh
-   !change in bucket depth in one leapfrog timestep [m]                                 
+	! use the raw filter in leapfrog time stepping
 
-   ! use the raw filter in leapfrog time stepping
+	filt(:,:) = bucket_depth(:,:,previous) - 2.0 * bucket_depth(:,:,current)
 
-   filt(:,:) = bucket_depth(:,:,previous) - 2.0 * bucket_depth(:,:,current)
+	if(previous == current) then
+	  bucket_depth(:,:,future ) = bucket_depth(:,:,previous) + dt_bucket
+	  bucket_depth(:,:,current) = bucket_depth(:,:,current ) + robert_bucket &
+		*(bucket_depth(:,:,previous) - 2.0*bucket_depth(:,:,current) + bucket_depth(:,:,future)) * raw_bucket
+	else
+	  bucket_depth(:,:,current) = bucket_depth(:,:,current ) + robert_bucket &
+		*(bucket_depth(:,:,previous) - 2.0*bucket_depth(:,:,current)) * raw_bucket 
+	  bucket_depth(:,:,future ) = bucket_depth(:,:,previous) + dt_bucket
+	  bucket_depth(:,:,current) = bucket_depth(:,:,current) + robert_bucket * bucket_depth(:,:,future) * raw_bucket
+	endif
 
-   if(previous == current) then
-      bucket_depth(:,:,future ) = bucket_depth(:,:,previous) + dt_bucket
-      bucket_depth(:,:,current) = bucket_depth(:,:,current ) + robert_bucket &
-        *(bucket_depth(:,:,previous) - 2.0*bucket_depth(:,:,current) + bucket_depth(:,:,future)) * raw_bucket
-   else
-      bucket_depth(:,:,current) = bucket_depth(:,:,current ) + robert_bucket &
-        *(bucket_depth(:,:,previous) - 2.0*bucket_depth(:,:,current)) * raw_bucket 
-      bucket_depth(:,:,future ) = bucket_depth(:,:,previous) + dt_bucket
-      bucket_depth(:,:,current) = bucket_depth(:,:,current) + robert_bucket * bucket_depth(:,:,future) * raw_bucket
-   endif
+	bucket_depth(:,:,future) = bucket_depth(:,:,future) + robert_bucket * (filt(:,:) + bucket_depth(:,:, future)) &
+						   * (raw_bucket - 1.0)  
 
-   bucket_depth(:,:,future) = bucket_depth(:,:,future) + robert_bucket * (filt(:,:) + bucket_depth(:,:, future)) &
-                           * (raw_bucket - 1.0)  
+	where (bucket_depth <= 0.) bucket_depth = 0.
 
-   where (bucket_depth <= 0.) bucket_depth = 0.
+	! truncate surface reservoir over land points
+	   where(land .and. (bucket_depth(:,:,future) > max_bucket_depth_land))
+			bucket_depth(:,:,future) = max_bucket_depth_land
+	   end where
 
-   ! truncate surface reservoir over land points
-       where(land .and. (bucket_depth(:,:,future) > max_bucket_depth_land))
-            bucket_depth(:,:,future) = max_bucket_depth_land
-       end where
+	if(id_bucket_depth > 0) used = send_data(id_bucket_depth, bucket_depth(:,:,future), Time)
+	if(id_bucket_depth_conv > 0) used = send_data(id_bucket_depth_conv, depth_change_conv(:,:), Time)
+	if(id_bucket_depth_cond > 0) used = send_data(id_bucket_depth_cond, depth_change_cond(:,:), Time)
+	if(id_bucket_depth_lh > 0) used = send_data(id_bucket_depth_lh, depth_change_lh(:,:), Time)
 
-   if(id_bucket_depth > 0) used = send_data(id_bucket_depth, bucket_depth(:,:,future), Time)
-   if(id_bucket_depth_conv > 0) used = send_data(id_bucket_depth_conv, depth_change_conv(:,:), Time)
-   if(id_bucket_depth_cond > 0) used = send_data(id_bucket_depth_cond, depth_change_cond(:,:), Time)
-   if(id_bucket_depth_lh > 0) used = send_data(id_bucket_depth_lh, depth_change_lh(:,:), Time)
-
-endif
 ! end Add bucket section
 
+case(TAM_HYDRO) !mmm tam hydro case (currently uses total precip, including snow)
 
+	call tam_hydrology_driver(surf_liq,run_res,liq_table,height,runoff,infiltration,gle,run_out,discharge,recharge, &
+						subflow,precip,flux_q,porosity,rad_lat,rad_lon,current,previous,future,delta_t,delta_t,do_gle,      &
+						do_liq_table, evap_thresh) !mmm this took two separate delta_t values in original, couldn't figure out how they were different
 
+	if (id_sub > 0) then
+	used = send_data (id_sub, subflow, Time, is, js)
+	endif
+
+	if (id_infil > 0) then
+	used = send_data (id_infil, infiltration, Time, is, js)
+	endif
+
+	if (id_run > 0) then
+	used = send_data (id_run, run_out, Time, is, js)
+	endif
+
+	if (id_gle > 0) then
+	used = send_data (id_gle, gle, Time, is, js)
+	endif
+
+	if (id_dis > 0) then
+	used = send_data (id_dis, discharge, Time, is,js)
+	endif  
+
+	if (id_rech > 0) then
+	used = send_data (id_rech, recharge, Time, is,js)
+	endif  
+
+	if (id_table > 0) then
+	used = send_data (id_table, liq_table(:,:,current)/liq_dens/porosity, Time, is,js)
+	endif  
+
+	if (id_height > 0) then
+	used = send_data (id_height, height(:,:,current), Time, is,js)
+	endif  
+
+	if (id_res > 0) then
+	used = send_data (id_res, run_res(:,:,current)/liq_dens, Time, is,js)
+	endif 
+
+	if (id_qsfc > 0) then
+	used = send_data (id_qsfc, surf_liq(:,:,current)/liq_dens,Time,is,js) 
+	endif 
+
+	if (first_physics_call) first_physics_call = .false.
+
+end select
 
 end subroutine idealized_moist_phys
 !=================================================================================================================================
 subroutine idealized_moist_phys_end
+
+character(len=128)  :: filename
+integer             :: nt
 
 deallocate (dt_bucket, filt)
 if(two_stream_gray)      call two_stream_gray_rad_end
@@ -1304,6 +1716,43 @@ if(turb) then
    call vert_diff_end
    call vert_turb_driver_end
 endif
+
+!mmm tam hydro end
+if(r_hydro_scheme .eq. TAM_HYDRO) then
+	
+	if (write_restart) then
+		call nullify_domain()
+		filename = 'RESTART/surface.res.nc'
+		if (mpp_pe() == mpp_root_pe()) print *, 'tam_physics module: Writing to surface restart file: ', &
+												 trim (filename)
+		call write_data(trim(filename), 'diffm', diff_m, grid_domain) !mmm originally diff_m_new & diff_t_new
+		call write_data(trim(filename), 'difft', diff_t, grid_domain)
+		do nt = 1,size(surf_liq,3)
+		  call write_data(trim(filename), 'surf_liq', surf_liq(:,:,nt), grid_domain)
+		  call write_data(trim(filename), 'run_res', run_res(:,:,nt), grid_domain)
+		end do
+
+		filename = 'RESTART/subsurface.res.nc'
+		if (mpp_pe() == mpp_root_pe()) print *, 'tam_physics module: Writing to subsurface restart file: ', &
+												 trim (filename)
+		do nt = 1,size(liq_table,3)
+		  call write_data(trim(filename), 'liq_table', liq_table(:,:,nt), grid_domain)
+		  call write_data(trim(filename), 'height', height(:,:,nt), grid_domain)
+		end do
+	endif
+	
+	deallocate (diff_m) !mmm not sure if these two deallocations are necessary
+	deallocate (diff_t) !mmm
+	deallocate (surf_liq)
+	deallocate (run_res)
+	deallocate (liq_table)
+	deallocate (height)
+	deallocate (topo)
+	
+	call tam_hydrology_end
+	call tam_surface_end
+endif
+
 call lscale_cond_end
 if(mixed_layer_bc)  call mixed_layer_end(t_surf, bucket_depth, bucket)
 if(do_damping) call damping_driver_end

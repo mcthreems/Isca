@@ -11,7 +11,7 @@ use time_manager_mod, only: time_type
 
 use monin_obukhov_mod, only: mo_drag, mo_profile
 use constants_mod,     only: cp_air, rdgas, rvgas, grav, kappa, stefan, hlv
-!use CH4_saturation_mod, only: get_es
+use sat_vapor_pres_mod, only: lookup_es
 
 implicit none
 private
@@ -34,7 +34,7 @@ public :: tam_surf_flux_2d
   
   !-----------------------------------------------------------------------
 
-  character(len=13) :: mod_name = 'surface_flux'
+  character(len=13) :: mod_name = 'tam_surface_flux'
   real    :: missing_value = -1.e10
 
 !-----------------------------------------------------------------------
@@ -91,8 +91,8 @@ public :: tam_surf_flux_2d
 !-----------------------------------------------------------------------
 
   !Sat vapor pressure (in Pa), perturbed sat vapor pressure
-  call get_es(t_surf,p_sat)
-  call get_es(t_surf+del_temp,p_sat1)
+  call lookup_es(t_surf,p_sat)
+  call lookup_es(t_surf+del_temp,p_sat1)
   
   q_sat  = Rdgas/Rvgas * (p_sat / (p_surf - (1.0-(Rdgas/Rvgas)*p_sat)))
   q_sat1 = Rdgas/Rvgas * (p_sat1 / (p_surf - (1.0-(Rdgas/Rvgas)*p_sat1)))

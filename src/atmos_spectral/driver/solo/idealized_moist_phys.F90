@@ -6,7 +6,7 @@ module idealized_moist_phys_mod
   use fms_mod, only: open_namelist_file, close_file
 #endif
 
-use fms_mod, only: write_version_number, file_exist, close_file, stdlog, error_mesg, NOTE, FATAL, read_data, field_size, uppercase, mpp_pe, mpp_root_pe
+use fms_mod, only: write_version_number, file_exist, close_file, stdlog, error_mesg, NOTE, FATAL, read_data, field_size, uppercase, mpp_pe, mpp_root_pe, nullify_domain, write_data
 
 use           constants_mod, only: grav, rdgas, rvgas, cp_air, PSTD_MKS, liq_dens, pi !mj cp_air needed for rrtmg !s pstd_mks needed for pref calculation
 
@@ -382,7 +382,7 @@ character(len=80)  :: scheme
 ! End Added for RAS
 
 !mmm added for tam hydro
-real, dimension(size(z_surf,1),size(z_surf,2)) :: dtd,surf_liq_begin,liq_table_begin,height_begin
+real, dimension(:,:), allocatable :: dtd,surf_liq_begin,liq_table_begin,height_begin
 integer :: nt, j
 character(len=128) :: filename
 !mmm end added for tam hydro
@@ -577,6 +577,12 @@ allocate(pref(num_levels+1)) !s reference pressure profile, as in spectral_physi
 allocate(p_half_1d(num_levels+1), ln_p_half_1d(num_levels+1))
 allocate(p_full_1d(num_levels  ), ln_p_full_1d(num_levels  ))
 allocate(capeflag     (is:ie, js:je))
+
+!mmm allocating TAM variables
+allocate(dtd (is:ie, js:je))
+allocate(surf_liq_begin (is:ie, js:je))
+allocate(liq_table_begin (is:ie, js:je))
+allocate(height_begin (is:ie, js:je))
 
 call get_surf_geopotential(z_surf)
 z_surf = z_surf/grav
@@ -881,9 +887,9 @@ select case(r_hydro_scheme)
 case(TAM_HYDRO)
 	call tam_hydrology_init(z_surf,dtd,surf_liq_begin,liq_table_begin,height_begin, &
 	                    init_surf_liq,init_liq_table,porosity,rad_lat,rad_lon)
-	                    
+                  
 	if (id_dtd > 0) used = send_data(id_dtd, dtd, Time)
-	
+    
 	! allocate ( diff_m_new(is:ie,js:je,nlevels)  ) !mmm these are for a diffusion_smooth option, could be added later
  	! allocate ( diff_t_new(is:ie,js:je,nlevels)  )
 	allocate ( surf_liq(is:ie,js:je,num_time_levels) )
@@ -892,11 +898,11 @@ case(TAM_HYDRO)
 	allocate ( height(is:ie,js:je,num_time_levels) ) 
 	allocate ( topo(is:ie,js:je) )
 	allocate ( albedoi(is:ie, js:je) )
-
+    
 	topo = dtd
-
+	
 	call mpp_get_global_domain(grid_domain, xsize=global_num_lon, ysize=global_num_lat)
-
+    
 	!mmm read from hydrology restart files
 	filename= 'INPUT/surface.res.nc' 
 	call nullify_domain()
@@ -1515,10 +1521,9 @@ if(turb) then
 !!$   dhdt_atm   = 0.0
 !!$   dedq_atm   = 0.0
 
-   if(.not.(mixed_layer_bc.or.gp_surface)) then
+   if(.not.(mixed_layer_bc .or. gp_surface .or. r_hydro_scheme .eq. TAM_HYDRO)) then
      call error_mesg('atmosphere','no diffusion implentation for non-mixed layer b.c.',FATAL)
    endif
-
 
 ! We must use gcm_vert_diff_down and _up rather than gcm_vert_diff as the surface flux
 ! depends implicitly on the surface values
@@ -1574,15 +1579,15 @@ if(turb) then
 					  dhdt_atm, dedq_atm, Tri_surf, var_surf_prop,        &
 					  threshold_liq, liq_dens, convective_lakes,          & 
 					  do_liq_table, height(:,:,current), topo,porosity)
-			  
+		
 		t_surf(:,:) = tam_tgrnd(is:ie,js:je,1)
-
+		
 		if (id_tsfc > 0) used = send_data (id_tsfc, t_surf, Time, is, js)
    
    endif
 
    call gcm_vert_diff_up (1, 1, delta_t, Tri_surf, dt_tg(:,:,:), dt_tracers(:,:,:,nsphum), dt_tracers(:,:,:,:))
-
+   
    if(id_diff_dt_ug > 0) used = send_data(id_diff_dt_ug, dt_ug - non_diff_dt_ug, Time)
    if(id_diff_dt_vg > 0) used = send_data(id_diff_dt_vg, dt_vg - non_diff_dt_vg, Time)
    if(id_diff_dt_tg > 0) used = send_data(id_diff_dt_tg, dt_tg - non_diff_dt_tg, Time)
@@ -1651,23 +1656,23 @@ case(BUCKET_HYDRO)
 ! end Add bucket section
 
 case(TAM_HYDRO) !mmm tam hydro case (currently uses total precip, including snow)
-
+	
 	call tam_hydrology_driver(surf_liq,run_res,liq_table,height,runoff,infiltration,gle,run_out,discharge,recharge, &
 						subflow,precip,flux_q,porosity,rad_lat,rad_lon,current,previous,future,delta_t,delta_t,do_gle,      &
 						do_liq_table, evap_thresh) !mmm this took two separate delta_t values in original, couldn't figure out how they were different
-
+	
 	if (id_sub > 0) then
 	used = send_data (id_sub, subflow, Time, is, js)
 	endif
-
+	
 	if (id_infil > 0) then
 	used = send_data (id_infil, infiltration, Time, is, js)
 	endif
-
+	
 	if (id_run > 0) then
 	used = send_data (id_run, run_out, Time, is, js)
 	endif
-
+	
 	if (id_gle > 0) then
 	used = send_data (id_gle, gle, Time, is, js)
 	endif

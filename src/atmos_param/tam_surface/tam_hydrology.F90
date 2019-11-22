@@ -5,8 +5,8 @@ module tam_hydrology_mod
 !	Computes surface runoff, infiltration, and methane table adjustments
 !-----------------------------------------------------------------------
 
-use constants_mod,              only: pi, Radius, grav
-use fms_mod,                    only: mpp_npes, error_mesg, FATAL, file_exist,       &
+use constants_mod,              only: pi, Radius, grav, liq_dens
+use fms_mod,                    only: mpp_npes, error_mesg, FATAL, NOTE, file_exist,   &
                                       open_namelist_file, check_nml_error, &
                                       mpp_pe, mpp_root_pe, close_file,     &
                                       write_version_number, stdlog,        &
@@ -45,11 +45,11 @@ real, dimension(:,:), allocatable, save  ::  dtd,lat_halo
 
   !Methane density:
   !Note that, since this is a parameter, it is not in the actual namelist
-  real,parameter :: liqch4_dens   = 450.    !Density of liquid methane (km/m3)
+  !real,parameter :: liq_dens   = 450.    !Density of liquid methane (km/m3)
  
 ! Topography
-  logical :: do_interpolated_topo = .false.      !Use topography from 'topography.F90' module?
-  character(len=64) :: topog_file    = 'topo_corlies_DS2_T21.nc'   !Otherwise, use input file
+  logical :: do_flat_topo = .true.      !Use a default flat topography
+  character(len=64) :: topog_file    = 'topo.nc'   !Otherwise, use input file
 
 ! Surface runoff
   logical :: do_topo_runoff  = .false.  !Do runoff at all? 
@@ -79,14 +79,14 @@ real, dimension(:,:), allocatable, save  ::  dtd,lat_halo
 
   namelist /hydrology_nml/ input_speed,linear_catch,run_speed,infil_first,   &
                            basin_length,hyd_cond,infil_rate,  &
-                           do_diff,do_darcy,do_interpolated_topo, &
+                           do_diff,do_darcy,do_flat_topo, &
                            topog_file,do_topo_runoff,do_global_infil,infil_thresh, &
                            init_lakes,init_gauss,do_leapfrog, &
                            robert_surf_liq,RAW_surf_liq               
                                
   
 !-----------------------------------------------------------------------
-  character(len=13) :: mod_name = 'hydrology'
+  character(len=13) :: mod_name = 'tam_hydrology'
   character(len=*), parameter :: version = '$Id: hydrology.F90,v 2017/01 SPF Exp $'
   character(len=*), parameter :: tagname = '$Name: tam $'
 !-----------------------------------------------------------------------
@@ -140,80 +140,55 @@ subroutine tam_hydrology_init(zsurf,topo_out,liq_begin,table_begin,height_begin,
 ! Open topo file to set up data domain 
 !-----------------------------------------------------------------------
 
- if (all(zsurf==0.0)) then
-    if (mpp_pe()==mpp_root_pe()) print *, 'Topography is not coupled to atmosphere, used just for hydrology calculations'
-    if (.not.do_interpolated_topo) then
-     if(file_exist('INPUT/DATA/'//trim(topog_file))) then
-       call mpp_get_global_domain(grid_domain, xsize=global_num_lon, ysize=global_num_lat) 
-       call field_size('INPUT/DATA/'//trim(topog_file), 'zsurf', siz)
-       if ( siz(1) == global_num_lon .or. siz(2) == global_num_lat ) then
-         call read_data('INPUT/DATA/'//trim(topog_file), 'zsurf', surf_height, grid_domain)
-       else
-         call error_mesg ('tam_hydrology_init', &
-                          'Topography file contains data on wrong grid', FATAL)
-       endif
+ if (.not. do_flat_topo) then
+	 if(file_exist('INPUT/'//trim(topog_file))) then
+	   call mpp_get_global_domain(grid_domain, xsize=global_num_lon, ysize=global_num_lat) 
+	   call field_size('INPUT/'//trim(topog_file), 'zsurf', siz)
+	   if ( siz(1) == global_num_lon .or. siz(2) == global_num_lat ) then
+		 call read_data('INPUT/'//trim(topog_file), 'zsurf', surf_height, grid_domain)
+	   else
+		 call error_mesg ('tam_hydrology_init', &
+						  'Topography file contains data on wrong grid', FATAL)
+	   endif
 
-       !Ensure all topo heights are positive to make methane table comparisons easier 
-       if (mpp_global_min(grid_domain,surf_height) .le. 0.0) surf_height = surf_height + &
-             abs(mpp_global_min(grid_domain,surf_height)) 
-       
-       !Spectrally truncate the topography
-       call get_spec_domain(ms, me, ns, ne)
-       allocate(spec_tmp(ms:me, ns:ne))
-       call trans_grid_to_spherical(surf_height,spec_tmp)
-       call trans_spherical_to_grid(spec_tmp,surf_height)
-       deallocate(spec_tmp)
+	   !Ensure all topo heights are positive to make methane table comparisons easier 
+	   if (mpp_global_min(grid_domain,surf_height) .le. 0.0) surf_height = surf_height + &
+			 abs(mpp_global_min(grid_domain,surf_height)) 
+   
+	   !Spectrally truncate the topography
+	   call get_spec_domain(ms, me, ns, ne)
+	   allocate(spec_tmp(ms:me, ns:ne))
+	   call trans_grid_to_spherical(surf_height,spec_tmp)
+	   call trans_spherical_to_grid(spec_tmp,surf_height)
+	   deallocate(spec_tmp)
 
-     else
-       call error_mesg('tam_hydrology_init','INPUT/DATA/'//trim(topog_file)//' does not exist', FATAL)
-     end if
-    else
-     ! Get realistic topography
-       call mpp_get_global_domain(grid_domain, xsize=global_num_lon, ysize=global_num_lat) 
-       call get_grid_domain(is, ie, js, je)
-       allocate(blon(is:ie+1), blat(js:je+1))
-       call get_grid_boundaries(blon, blat)
-       topo_file_exists = get_topog_mean(blon, blat, surf_height)
-       if (.not.topo_file_exists) then 
-         call error_mesg('tam_hydrology_init','topography data file does not exist', FATAL)
-       endif
-       surf_geopotential = grav*surf_height
+	 else
+	   call error_mesg('tam_hydrology_init','INPUT/'//trim(topog_file)//' does not exist', FATAL)
+	 end if
+else
+	 ! Get flat topography
+	   call mpp_get_global_domain(grid_domain, xsize=global_num_lon, ysize=global_num_lat) 
+	   call get_grid_domain(is, ie, js, je)
+	   allocate(blon(is:ie+1), blat(js:je+1))
+	   call get_grid_boundaries(blon, blat)
+	   ! topo_file_exists = get_topog_mean(blon, blat, surf_height)
+! 	   if (.not.topo_file_exists) then 
+! 		 call error_mesg('tam_hydrology_init','topography data file does not exist', FATAL)
+! 	   endif
+	   surf_height = 1.0					!mmm just setting a flat topography with all points at height 1
+	   surf_geopotential = grav*surf_height
 
-   !    Spectrally truncate the realistic topography 
-        call get_spec_domain(ms, me, ns, ne)
-        allocate(spec_tmp(ms:me, ns:ne))
-        call trans_grid_to_spherical(surf_geopotential,spec_tmp)
-        call trans_spherical_to_grid(spec_tmp,surf_geopotential)
-        deallocate(spec_tmp)
-        deallocate(blon, blat)
-        surf_height = surf_geopotential/grav
-        if (mpp_global_min(grid_domain,surf_height) .lt. 0.0) surf_height = &
-             surf_height + abs(mpp_global_min(grid_domain,surf_height))
-    end if
- else
-  ! Get realistic topography
-       call mpp_get_global_domain(grid_domain, xsize=global_num_lon, ysize=global_num_lat) 
-       call get_grid_domain(is, ie, js, je)
-       allocate(blon(is:ie+1), blat(js:je+1))
-       call get_grid_boundaries(blon, blat)
-       topo_file_exists = get_topog_mean(blon, blat, surf_height)
-       if (.not.topo_file_exists) then 
-         call error_mesg('tam_hydrology_init','topography data file does not exist', FATAL)
-       endif
-       surf_geopotential = grav*surf_height
-
-   !    Spectrally truncate the realistic topography 
-        call get_spec_domain(ms, me, ns, ne)
-        allocate(spec_tmp(ms:me, ns:ne))
-        call trans_grid_to_spherical(surf_geopotential,spec_tmp)
-        call trans_spherical_to_grid(spec_tmp,surf_geopotential)
-        deallocate(spec_tmp)
-        deallocate(blon, blat)
-        surf_height = surf_geopotential/grav
-        if (mpp_global_min(grid_domain,surf_height) .lt. 0.0) surf_height = &
-             surf_height + abs(mpp_global_min(grid_domain,surf_height))
-
- end if
+	!    Spectrally truncate the flat topography 
+		call get_spec_domain(ms, me, ns, ne)
+		allocate(spec_tmp(ms:me, ns:ne))
+		call trans_grid_to_spherical(surf_geopotential,spec_tmp)
+		call trans_spherical_to_grid(spec_tmp,surf_geopotential)
+		deallocate(spec_tmp)
+		deallocate(blon, blat)
+		surf_height = surf_geopotential/grav
+		if (mpp_global_min(grid_domain,surf_height) .lt. 0.0) surf_height = &
+			 surf_height + abs(mpp_global_min(grid_domain,surf_height))
+end if
 
 !-----------------------------------------------------------------------
 !  Initialize surface and methane table heights
@@ -237,12 +212,12 @@ subroutine tam_hydrology_init(zsurf,topo_out,liq_begin,table_begin,height_begin,
         end do
       end do
       where (init_depth .le. 0.0) init_depth = init_surf
-      liq_begin = init_depth*liqch4_dens 
+      liq_begin = init_depth*liq_dens 
  
-      table_begin = init_table*liqch4_dens*porosity
-      height_begin = table_begin/liqch4_dens/porosity
+      table_begin = init_table*liq_dens*porosity
+      height_begin = table_begin/liq_dens/porosity
       if (height_begin(i,j) .ge. surf_height(i,j)) &
-           table_begin(i,j) = surf_height(i,j)*liqch4_dens*porosity
+           table_begin(i,j) = surf_height(i,j)*liq_dens*porosity
 
 
  else if (init_gauss) then  !Note these gaussian parameters are hard-coded
@@ -262,35 +237,34 @@ subroutine tam_hydrology_init(zsurf,topo_out,liq_begin,table_begin,height_begin,
         dx = abs(lon(i,1) - olon) ! dist from x origin
         dx = min(dx, abs(dx-tpi))  ! To ensure that: -pi <= dx <= pi
         xx = max(0., dx-rlon)/wlon
-        table_begin(i,j) = init_table*liqch4_dens*porosity*exp(-xx**2 - yy**2)
-        !table_begin(i,j) = init_table*liqch4_dens*porosity
-        height_begin(i,j) = table_begin(i,j)/liqch4_dens/porosity
+        table_begin(i,j) = init_table*liq_dens*porosity*exp(-xx**2 - yy**2)
+        !table_begin(i,j) = init_table*liq_dens*porosity
+        height_begin(i,j) = table_begin(i,j)/liq_dens/porosity
         if (height_begin(i,j) .ge. surf_height(i,j)) then
-           table_begin(i,j) = surf_height(i,j)*liqch4_dens*porosity
-           liq_begin(i,j) = (height_begin(i,j) - surf_height(i,j))*liqch4_dens + init_surf*liqch4_dens
+           table_begin(i,j) = surf_height(i,j)*liq_dens*porosity
+           liq_begin(i,j) = (height_begin(i,j) - surf_height(i,j))*liq_dens + init_surf*liq_dens
         else
-           liq_begin(i,j) = init_surf*liqch4_dens
+           liq_begin(i,j) = init_surf*liq_dens
         end if
       enddo
     enddo
    else   !DEFAULT INITIALIZATION: constant equipotential = init_table; 
           ! and surface liquid is everywhere = init_surf
-
-    print *,'Default surface and subsurface initialization'
+    call error_mesg('tam_hydrology','Default surface and subsurface initialization', NOTE)
      do j=1,size(lat,2)
       do i=1,size(lon,1)
         !if((j == 16 .or. j==17) .and. (i == 32)) then 
          !   print *,'making two cells of different heights' 
-            table_begin(i,j) = (init_table)*liqch4_dens*porosity
-            !table_begin(i,j) = (surf_height(i,j))*liqch4_dens*porosity
-            height_begin(i,j) = table_begin(i,j)/liqch4_dens/porosity
+            table_begin(i,j) = (init_table)*liq_dens*porosity
+            !table_begin(i,j) = (surf_height(i,j))*liq_dens*porosity
+            height_begin(i,j) = table_begin(i,j)/liq_dens/porosity
             if (height_begin(i,j) .gt. surf_height(i,j)) then
-             table_begin(i,j) = surf_height(i,j)*liqch4_dens*porosity
-             liq_begin(i,j) = (height_begin(i,j) - surf_height(i,j))*liqch4_dens   
+             table_begin(i,j) = surf_height(i,j)*liq_dens*porosity
+             liq_begin(i,j) = (height_begin(i,j) - surf_height(i,j))*liq_dens   
             else
-             liq_begin(i,j) = init_surf*liqch4_dens
+             liq_begin(i,j) = init_surf*liq_dens
             end if 
-            liq_begin(i,j) = init_surf*liqch4_dens   
+            liq_begin(i,j) = init_surf*liq_dens   
          !end if
       enddo
     enddo
@@ -347,7 +321,7 @@ subroutine tam_hydrology_init(zsurf,topo_out,liq_begin,table_begin,height_begin,
                       'init_lakes and init_gauss cannot both be .true.', FATAL)
  
 
-  !hyd_diff = hyd_cond/(liqch4_dens*grav*beta_comp*porosity)
+  !hyd_diff = hyd_cond/(liq_dens*grav*beta_comp*porosity)
 
   module_initialized = .true.
   if (mpp_pe()==mpp_root_pe()) print *, 'Hydrology initialized.'
@@ -392,7 +366,7 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
 
   call get_wts_lat(wts_lat)
   gwe = 0.0
-
+  
 !----------------------------------------------------------------------------
 !  Begin by adding precip and evap, adjusting for groundwater evap
 !----------------------------------------------------------------------------
@@ -410,13 +384,13 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
      surf_liq(:,:,current) = surf_liq(:,:,current) + tot_rain*delta_t/dt
 
   else
-
+	
     if (do_leapfrog) then
        call perform_leap(surf_liq,tot_rain*delta_t/dt - evap*delta_t,previous,current,future)
     else
        surf_liq(:,:,current) = surf_liq(:,:,current) + tot_rain*delta_t/dt - evap*delta_t
     end if
-
+	
   end if
 
 
@@ -424,10 +398,10 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
 !  Diagnostically determine height based off of whether table is saturated
 !----------------------------------------------------------------------------
 
-  where (meth_table(:,:,current)/liqch4_dens/porosity .ge. dtd(:,js:je) - 1.e-10) !1e-10 to avoid numerical issues with small numbers
-    diag_height = dtd(:,js:je) + surf_liq(:,:,current)/liqch4_dens
+  where (meth_table(:,:,current)/liq_dens/porosity .ge. dtd(:,js:je) - 1.e-10) !1e-10 to avoid numerical issues with small numbers
+    diag_height = dtd(:,js:je) + surf_liq(:,:,current)/liq_dens
   elsewhere
-    diag_height = meth_table(:,:,current)/liqch4_dens/porosity
+    diag_height = meth_table(:,:,current)/liq_dens/porosity
   endwhere
 
 !----------------------------------------------------------------------------
@@ -435,13 +409,14 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
 !----------------------------------------------------------------------------
 
   infiltration = 0.0; run_out = 0.0; dis_out = 0.0; recharge = 0.0; removal = 0.0; discharge = 0.0
-
+  
   if (do_topo_runoff) then   
     call topo_runoff(runoff,removal,resflow,infiltration,discharge,surf_liq(:,:,current),run_res(:,:,current),&
           diag_height,tot_rain*delta_t/dt,evap*delta_t,lon,porosity,dt,do_methane_table)
+    
   else if (do_global_infil) then
     where (surf_liq(:,:,current) .gt. infil_thresh)
-      infiltration = min(surf_liq(:,:,current)-infil_thresh,infil_rate*dt*liqch4_dens)
+      infiltration = min(surf_liq(:,:,current)-infil_thresh,infil_rate*dt*liq_dens)
     endwhere
     runoff = 0.0; resflow = 0.0; removal = 0.0; discharge = 0.0
   else 
@@ -461,15 +436,16 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
       if (diag_height(i,j) .ge. dtd(is+i-1,js+j-1)) then
            !  where saturated, adjust height with discharge (no infil possible) 
           
-         height_dt(i,j) = (discharge(i,j) - removal(i,j))/liqch4_dens  !+ runoff(i,j) if that way 
+         height_dt(i,j) = (discharge(i,j) - removal(i,j))/liq_dens  !+ runoff(i,j) if that way 
+         
          if (diag_height(i,j) + height_dt(i,j) .ge. dtd(is+i-1,js+j-1)) then
-            surf_liq_dt(i,j) = height_dt(i,j)*liqch4_dens
+            surf_liq_dt(i,j) = height_dt(i,j)*liq_dens
             meth_table_dt(i,j) = 0.0
          else  !this should never happen
-            print *,'saturated table went below after runoff, height(i,j),height_dt(i,j),seep(i,j),surf(i,j),topo(i,j): ', diag_height(i,j),height_dt(i,j),removal(i,j)/liqch4_dens,surf_liq(i,j,current)/liqch4_dens,dtd(is+i-1,js+j-1),i,js+j-1
+            print *,'saturated table went below after runoff, height(i,j),height_dt(i,j),seep(i,j),surf(i,j),topo(i,j): ', diag_height(i,j),height_dt(i,j),removal(i,j)/liq_dens,surf_liq(i,j,current)/liq_dens,dtd(is+i-1,js+j-1),i,js+j-1
             height_dt(i,j) = height_dt(i,j)/porosity + (diag_height(i,j)-dtd(is+i-1,js+j-1))*(1.0/porosity - 1.0)
-            surf_liq_dt(i,j) = -(diag_height(i,j)-dtd(is+i-1,js+j-1))*liqch4_dens
-            meth_table_dt(i,j) = (height_dt(i,j) + diag_height(i,j) - dtd(is+i-1,js+j-1))*liqch4_dens*porosity
+            surf_liq_dt(i,j) = -(diag_height(i,j)-dtd(is+i-1,js+j-1))*liq_dens
+            meth_table_dt(i,j) = (height_dt(i,j) + diag_height(i,j) - dtd(is+i-1,js+j-1))*liq_dens*porosity
          end if
          
          infiltration(i,j) = 0.0  !to ensure no infil occurs when saturated
@@ -477,11 +453,11 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
       else !unsaturated
            !  infiltration(i,j) = constant infiltration rate (hyd_cond)
  
-         height_dt(i,j) = infiltration(i,j)/liqch4_dens/porosity
+         height_dt(i,j) = infiltration(i,j)/liq_dens/porosity
          if (diag_height(i,j) + height_dt(i,j) .ge. dtd(is+i-1,js+j-1)) then
            height_dt(i,j) = (dtd(is+i-1,js+j-1) - diag_height(i,j)) + (height_dt(i,j) + diag_height(i,j) - dtd(is+i-1,js+j-1))*porosity &
-                + (surf_liq(i,j,current)-infiltration(i,j)-removal(i,j)+discharge(i,j))/liqch4_dens
-           meth_table_dt(i,j) = (dtd(is+i-1,js+j-1)-diag_height(i,j))*porosity*liqch4_dens
+                + (surf_liq(i,j,current)-infiltration(i,j)-removal(i,j)+discharge(i,j))/liq_dens
+           meth_table_dt(i,j) = (dtd(is+i-1,js+j-1)-diag_height(i,j))*porosity*liq_dens
            surf_liq_dt(i,j) = - meth_table_dt(i,j) - removal(i,j) + discharge(i,j)
          else
            height_dt(i,j) = height_dt(i,j)
@@ -519,25 +495,22 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
    end if
 
 
-
   !DO METHANE TABLE
   if (do_methane_table) then
    !Perform methane table flow and outcrop to surface
    diffused = 0.0; sat_flow = 0.0; subflow = 0.0
    call do_subsurface_flow(diffused,sat_flow,subflow,meth_table(:,:,current),diag_height,surf_liq(:,:,current), &
         lon,porosity,dt)
-
    meth_table_dt = meth_table_dt + subflow
-
    if (do_leapfrog) then
    ! Perform Leapfrog time-stepping with RAW filter
     call perform_leap(meth_table,meth_table_dt,previous,current,future)
    else    
      diag_height = diag_height + diffused*delta_t/dt
    end if
- 
-  else 
 
+  else 
+	
     if (do_leapfrog) then
       subflow = 0.0; sat_flow = 0.0; diffused = 0.0
       meth_table_dt = infiltration*dt
@@ -556,7 +529,7 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
 !-----------------------------------------------------------------------
  
    surf_liq_dt = sat_flow
-
+call error_mesg('idealized_moist_phys','Debug check 5', NOTE)
    if (do_leapfrog) then
      call perform_leap(meth_table,meth_table_dt,previous,current,future)
    else
@@ -685,7 +658,7 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
   
        if (liquid(i,j) .gt. infil_thresh) then 
              if ((do_methane_table .and. (height(i,j) .lt. dtd(i+is-1,j+js-1))) .or. (do_global_infil .and. .not.do_methane_table)) then 
-                infil(i,j) = min(liquid(i,j) - infil_thresh,infil_rate*dt*liqch4_dens)
+                infil(i,j) = min(liquid(i,j) - infil_thresh,infil_rate*dt*liq_dens)
              end if 
        end if 
      end do
@@ -696,7 +669,7 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
   do j = js,je
     do i = is,ie
 
-      dld(i,j) = ( liquid(i-is+1,j-js+1) - infil(i-is+1,j-js+1) )/liqch4_dens  !Data Liquid Domain (in meters)
+      dld(i,j) = ( liquid(i-is+1,j-js+1) - infil(i-is+1,j-js+1) )/liq_dens  !Data Liquid Domain (in meters)
 
     end do
   end do
@@ -797,7 +770,7 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
 !  Parameterize runoff speed and move the flow
 !-----------------------------------------------------------------------       
 
-        curr_liq = dld(ix,jx)*liqch4_dens
+        curr_liq = dld(ix,jx)*liq_dens
 
         ue = evap(i,j)      !updated evap 
         ur = rain(i,j)      !updated rain
@@ -857,7 +830,7 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
        ix = is+i-1 
        jx = js+j-1
          
-         curr_liq = dld(ix,jx)*liqch4_dens          
+         curr_liq = dld(ix,jx)*liq_dens          
          rrc = rr(i,j)
           
           if (do_methane_table .and. (height(i,j) .ge. dtd(ix,jx))) then
@@ -898,7 +871,7 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
         if (.not.infil_first) then
           if (liquid(i,j)+dis(i,j) .gt. infil_thresh) then
              if ((do_methane_table .and. (height(i,j) .lt. dtd(i+is-1,j+js-1))) .or. (do_global_infil .and. .not.do_methane_table)) then 
-                infil(i,j) = min(liquid(i,j) + dis(i,j) - infil_thresh,infil_rate*dt*liqch4_dens)
+                infil(i,j) = min(liquid(i,j) + dis(i,j) - infil_thresh,infil_rate*dt*liq_dens)
              end if 
           end if 
 
@@ -928,7 +901,7 @@ subroutine gosurfflow(drd,drd_north,drd_south,cp,wts,length,curr_liq,ix,jx,rx,ry
   real  :: tc,cell_run,max_run,goflow,runflow
 
   !Maximum runoff from one cell to another
-  max_run = 0.5*(cp(ix,jx) - cp(rx,ry))*liqch4_dens*wts(ry)/wts(jx)  !everything in kg/m2
+  max_run = 0.5*(cp(ix,jx) - cp(rx,ry))*liq_dens*wts(ry)/wts(jx)  !everything in kg/m2
   if (max_run .lt. 0.0) then 
       max_run = 0.0
   end if
@@ -940,10 +913,10 @@ subroutine gosurfflow(drd,drd_north,drd_south,cp,wts,length,curr_liq,ix,jx,rx,ry
  
    !Print out rates of interest in spectral.out
     if (first_hydro_call) print *, 'tc,linear_catch,length,L/S,rain,evap,jx: ',tc,cell_run,length, length/sqrt(abs(slope)),rain,ue,jx
-    if (rain*1000*86400/dt/liqch4_dens .gt. 100.0) print *, 'intense storm > 100 mm/day, rain (mm/day), runoff,tc : ',rain*1000*86400/dt/liqch4_dens,cell_run,tc,jx
+    if (rain*1000*86400/dt/liq_dens .gt. 100.0) print *, 'intense storm > 100 mm/day, rain (mm/day), runoff,tc : ',rain*1000*86400/dt/liq_dens,cell_run,tc,jx
 
   else if (input_speed) then
-      cell_run = run_speed*dt*liqch4_dens*abs(slope)
+      cell_run = run_speed*dt*liq_dens*abs(slope)
   else
       cell_run = 0.0
   end if
@@ -1008,54 +981,58 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
   	!"Real" diffusion
   	real, dimension(is:ie,js:je) 					:: dt_table,table_diffusion
   	real, dimension(size(liquid,1),size(liquid,2))	:: diag_height
-
+	
+  	
   	px = size(subflow,1)	!number of longitudes on processor
   	py = size(subflow,2)	!number of latitudes on processor	
-
+	
 	allocate(blon(is:ie+1), blat(js:je+1))
 	call get_grid_boundaries(blon, blat)
-
-        drd = 0.0; drd_north = 0.0; drd_south = 0.0; final_flow = 0.0; dld = 0.0
+	
+    drd = 0.0; drd_north = 0.0; drd_south = 0.0; final_flow = 0.0; dld = 0.0
   	diff = 0.0				!change in methane table height
   	diag_height = height	!overall methane table height 
     
   	if (do_diff) then	!If doing "real" diffusion (with spherical harmonics)
+    	
     	dt_table = 0.0
     	table_diffusion = 0.0 
-  
-    	call diffuse_table(dt_table,diag_height,dt,hyd_cond,table_diffusion,porosity)  
+  		
+    	call diffuse_table(dt_table,diag_height,dt,hyd_cond,table_diffusion,porosity)
+    	
     	do i=is,ie
     		do j=js,je
         		if (diag_height(i-is+1,j-js+1) .ge. dtd(i,j)) then
           			if ((diag_height(i-is+1,j-js+1) + dt_table(i,j)) .ge. dtd(i,j)) then
             			diff(i-is+1,j-js+1) = dt_table(i,j)*porosity                         
-            			sat_flow(i-is+1,j-js+1) = dt_table(i,j)*porosity*liqch4_dens
+            			sat_flow(i-is+1,j-js+1) = dt_table(i,j)*porosity*liq_dens
             			subflow(i-is+1,j-js+1) = 0.0
           			else
             			diff(i-is+1,j-js+1) = (diag_height(i-is+1,j-js+1) + dt_table(i,j) + (diag_height(i-is+1,j-js+1)-dtd(i,j))*(1.0-porosity)) - diag_height(i-is+1,j-js+1)
-            			sat_flow(i-is+1,j-js+1) = -(diag_height(i-is+1,j-js+1) - dtd(i,j))*porosity*liqch4_dens
-            			subflow(i-is+1,j-js+1) = (dt_table(i,j) + diag_height(i-is+1,j-js+1) - dtd(i,j))*porosity*liqch4_dens
+            			sat_flow(i-is+1,j-js+1) = -(diag_height(i-is+1,j-js+1) - dtd(i,j))*porosity*liq_dens
+            			subflow(i-is+1,j-js+1) = (dt_table(i,j) + diag_height(i-is+1,j-js+1) - dtd(i,j))*porosity*liq_dens
           			end if
         		else
           			if ((diag_height(i-is+1,j-js+1) + dt_table(i,j)) .ge. dtd(i,j)) then
-            			diff(i-is+1,j-js+1) = (dtd(i,j) + (diag_height(i-is+1,j-js+1)-dtd(i,j)+dt_table(i,j))*porosity) - diag_height(i-is+1,j-js+1) + liquid(i-is+1,j-js+1)/liqch4_dens!need to add surface liquid
-            			sat_flow(i-is+1,j-js+1) = (diag_height(i-is+1,j-js+1)-dtd(i,j)+dt_table(i,j))*porosity*liqch4_dens
-            			subflow(i-is+1,j-js+1) = (dtd(i,j) - diag_height(i-is+1,j-js+1))*porosity*liqch4_dens
+            			diff(i-is+1,j-js+1) = (dtd(i,j) + (diag_height(i-is+1,j-js+1)-dtd(i,j)+dt_table(i,j))*porosity) - diag_height(i-is+1,j-js+1) + liquid(i-is+1,j-js+1)/liq_dens!need to add surface liquid
+            			sat_flow(i-is+1,j-js+1) = (diag_height(i-is+1,j-js+1)-dtd(i,j)+dt_table(i,j))*porosity*liq_dens
+            			subflow(i-is+1,j-js+1) = (dtd(i,j) - diag_height(i-is+1,j-js+1))*porosity*liq_dens
             			sat_flow(i-is+1,j-js+1) = 0.0
-            			subflow(i-is+1,j-js+1) = dt_table(i,j)*porosity*liqch4_dens
+            			subflow(i-is+1,j-js+1) = dt_table(i,j)*porosity*liq_dens
           			end if
        		 	end if
      		end do
     	end do
 
 	elseif (do_darcy) then	!Continue with discretized Darcy flow 
+  		
   		do i = 2,nx+1
     		ii(i) = i-1+nx/2
     		if (ii(i) .gt. nx) ii(i) = ii(i) - nx
   		end do
   		ii(1) = ii(nx+1)
   		ii(nx+2) = ii(2)
-    
+    	
   		do i=is,ie
     		do j=js,je
 				dld(i,j) = diag_height(i-is+1,j-js+1)
@@ -1064,9 +1041,9 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
 
   		call get_wts_lat(wts_lat)
 		call mpp_update_domains(dld, topo_domain)
-
+		
 		cp = dld	!cell potentials, in meters
-
+		
 		do j = 1,py
 			do i = 1,px
         		jx = js+j-1
@@ -1156,7 +1133,6 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
             		dfrac_temp(kmax)= 0.
           		end do
  
-	 	
 !-----------------------------------------------------------------------------------------
 !8/21/2018 JML
 !This code discretizes Darcy flow
@@ -1206,14 +1182,19 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
                        
 			end do
 		end do
-
+		call error_mesg('idealized_moist_phys','Debug check 1', NOTE)
                 !combine all volume removals and additions for each cell into 'final_flow' array
-  		final_flow = final_flow + drd                
+  		final_flow = final_flow + drd 
+  		call error_mesg('idealized_moist_phys','Debug check 2', NOTE)               
   		call mpp_update_domains( drd_south, topo_domain)
+  		call error_mesg('idealized_moist_phys','Debug check 3', NOTE)
   		call mpp_update_domains( drd_north, topo_domain)
+  		call error_mesg('idealized_moist_phys','Debug check 4', NOTE)
 		final_flow(:,js) = final_flow(:,js) + drd_north(:,jsd) 
-		final_flow(:,je) = final_flow(:,je) + drd_south(:,jed) 
-
+		call error_mesg('idealized_moist_phys','Debug check 5', NOTE)
+		final_flow(:,je) = final_flow(:,je) + drd_south(:,jed)
+		call error_mesg('idealized_moist_phys','Debug check 6', NOTE) 
+		
 		!Diagnostics
                 cell_dh = 0.0; cell_area = 0.0
 		do j = 1,py
@@ -1251,19 +1232,19 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
 
         		if (diag_height(i,j) .ge. dtd(ix,jx)) then
         			if ((diag_height(i,j) + cell_dh) .ge. dtd(ix,jx)) then
-        				sat_flow(i,j) = cell_dh*liqch4_dens
+        				sat_flow(i,j) = cell_dh*liq_dens
         				subflow(i,j)  = 0.0
         			else
-        				sat_flow(i,j) = -(diag_height(i,j) - dtd(ix,jx))*liqch4_dens
-        				subflow(i,j)  = (cell_dh + diag_height(i,j) - dtd(ix,jx))*porosity*liqch4_dens
+        				sat_flow(i,j) = -(diag_height(i,j) - dtd(ix,jx))*liq_dens
+        				subflow(i,j)  = (cell_dh + diag_height(i,j) - dtd(ix,jx))*porosity*liq_dens
         			end if
         		else
         			if ((diag_height(i,j) + cell_dh) .ge. dtd(ix,jx)) then
-        				sat_flow(i,j) = (diag_height(i,j) - dtd(ix,jx) + cell_dh)*liqch4_dens
-        				subflow(i,j)  = (dtd(ix,jx) - diag_height(i,j))*porosity*liqch4_dens
+        				sat_flow(i,j) = (diag_height(i,j) - dtd(ix,jx) + cell_dh)*liq_dens
+        				subflow(i,j)  = (dtd(ix,jx) - diag_height(i,j))*porosity*liq_dens
         			else
         				sat_flow(i,j) = 0.0
-    					subflow(i,j)  = cell_dh*porosity*liqch4_dens
+    					subflow(i,j)  = cell_dh*porosity*liq_dens
     				end if
     			end if
 			end do

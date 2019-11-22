@@ -32,6 +32,7 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
 ! Namelist:
 !-----------------------------------------------------------------------
 
+!mmm Most likely some of these will need to be changed for Earth
   integer :: nlayers       = 10        !Number of ground layers
   real :: cnfac            = .5        !C-N parameter "alpha" (.5 or 1)
   real :: capr             = 1.0 !.34  !Factor for surface depth, 0<.34<1
@@ -42,7 +43,7 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
   
  
   !Initial surface temperature (cold start)
-  real    :: tsurf_init       = 93.0
+  real    :: tsurf_init       = 273.15 !mmm made this freezing point, was 93 before (for Titan). Can be changed later
   
   namelist /tam_surface_nml/ nlayers, cnfac, capr,                &
                                thermal_cond_reg, thermal_cond_liq,  & 

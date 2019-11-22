@@ -529,7 +529,7 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
 !-----------------------------------------------------------------------
  
    surf_liq_dt = sat_flow
-call error_mesg('idealized_moist_phys','Debug check 5', NOTE)
+
    if (do_leapfrog) then
      call perform_leap(meth_table,meth_table_dt,previous,current,future)
    else
@@ -1182,18 +1182,12 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
                        
 			end do
 		end do
-		call error_mesg('idealized_moist_phys','Debug check 1', NOTE)
                 !combine all volume removals and additions for each cell into 'final_flow' array
   		final_flow = final_flow + drd 
-  		call error_mesg('idealized_moist_phys','Debug check 2', NOTE)               
   		call mpp_update_domains( drd_south, topo_domain)
-  		call error_mesg('idealized_moist_phys','Debug check 3', NOTE)
-  		call mpp_update_domains( drd_north, topo_domain)
-  		call error_mesg('idealized_moist_phys','Debug check 4', NOTE)
+  		call mpp_update_domains( drd_north, topo_domain) !mmm segfaults if specified # of cores is incorrect
 		final_flow(:,js) = final_flow(:,js) + drd_north(:,jsd) 
-		call error_mesg('idealized_moist_phys','Debug check 5', NOTE)
 		final_flow(:,je) = final_flow(:,je) + drd_south(:,jed)
-		call error_mesg('idealized_moist_phys','Debug check 6', NOTE) 
 		
 		!Diagnostics
                 cell_dh = 0.0; cell_area = 0.0

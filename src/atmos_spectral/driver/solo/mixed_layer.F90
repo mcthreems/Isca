@@ -125,6 +125,9 @@ logical :: add_latent_heat_flux_anom = .false.
 character(len=256) :: flux_lhe_anom_file_name  = 'INPUT/flux_lhe_anom.nc'
 character(len=256) :: flux_lhe_anom_field_name = 'flux_lhe_anom'
 
+logical :: var_hcap = .false. !mmm variable heat capacity flag
+logical :: var_alb  = .false. !mmm variable albedo flag
+
 namelist/mixed_layer_nml/ evaporation, depth, qflux_amp, qflux_width, tconst,&
                               delta_T, prescribe_initial_dist,albedo_value,  &
                               land_depth,trop_depth,                         &  !mj
@@ -142,7 +145,7 @@ namelist/mixed_layer_nml/ evaporation, depth, qflux_amp, qflux_width, tconst,&
                               ice_albedo_value, specify_sst_over_ocean_only, &
                               ice_concentration_threshold,                   &
                               add_latent_heat_flux_anom,flux_lhe_anom_file_name,&
-                              flux_lhe_anom_field_name
+                              flux_lhe_anom_field_name, var_hcap, var_alb !mmm variable heat capacity and albedo flags
 
 !=================================================================================================================================
 
@@ -186,6 +189,7 @@ real, allocatable, dimension(:,:)   ::                                        &
      t_surf_dependence,     &   !
      corrected_flux,        &   !
      eff_heat_capacity,     &   ! Effective heat capacity
+     dynamic_heat_capacity, &   !mmm dynamic heat capacity
      delta_t_surf,          &   ! Increment in surface temperature
      zsurf,                 &   ! mj know about topography
      land_sea_heat_capacity,&
@@ -230,6 +234,7 @@ character(32) :: tr_name
 integer, dimension(4) :: siz
 character(len=12) :: ctmp1='     by     ', ctmp2='     by     '
 
+
 if(module_is_initialized) return
 
 call write_version_number(version, tagname)
@@ -273,6 +278,7 @@ allocate(beta_q                  (is:ie, js:je))
 allocate(beta_lw                 (is:ie, js:je))
 allocate(delta_t_surf            (is:ie, js:je))
 allocate(eff_heat_capacity       (is:ie, js:je))
+allocate(dynamic_heat_capacity   (is:ie, js:je))!mmm
 allocate(corrected_flux          (is:ie, js:je))
 allocate(t_surf_dependence       (is:ie, js:je))
 allocate (albedo_initial         (is:ie, js:je))
@@ -350,8 +356,13 @@ id_flux_lhe = register_diag_field(mod_name, 'flux_lhe',        &
                                  axes(1:2), Time, 'latent heat flux up at surface','watts/m2')
 id_flux_oceanq = register_diag_field(mod_name, 'flux_oceanq',        &
                                  axes(1:2), Time, 'oceanic Q-flux','watts/m2')
-id_heat_cap = register_static_field(mod_name, 'ml_heat_cap',        &
+if (var_hcap) then !mmm dynamic heat capacity
+        id_heat_cap = register_diag_field(mod_name, 'ml_heat_cap',        &
+                                 axes(1:2), Time, 'mixed layer heat capacity','joules/m^2/deg C')
+else
+        id_heat_cap = register_static_field(mod_name, 'ml_heat_cap',        &
                                  axes(1:2), 'mixed layer heat capacity','joules/m^2/deg C')
+endif
 id_delta_t_surf = register_diag_field(mod_name, 'delta_t_surf',        &
                                  axes(1:2), Time, 'change in sst','K')
 if (update_albedo_from_ice) then
@@ -359,6 +370,9 @@ if (update_albedo_from_ice) then
                                  axes(1:2), Time, 'surface albedo', 'none')
 	id_ice_conc = register_diag_field(mod_name, 'ice_conc',    &
                                  axes(1:2), Time, 'ice_concentration', 'none')
+else if (var_alb .and. .not. update_albedo_from_ice) then  !mmm dynamic albedo
+        id_albedo = register_diag_field(mod_name, 'albedo',    &
+                                 axes(1:2), Time, 'surface albedo', 'none')
 else
 	id_albedo = register_static_field(mod_name, 'albedo',    &
                                  axes(1:2), 'surface albedo', 'none')
@@ -420,7 +434,9 @@ albedo(:,:) = albedo_value
 
 if(trim(land_option) .eq. 'input') then
 
-where(land) albedo = land_albedo_prefactor * albedo
+if(.not. var_alb) then !mmm code for varying albedo based on bucket_depth
+ where(land) albedo = land_albedo_prefactor * albedo
+endif
 
 endif
 
@@ -471,14 +487,16 @@ albedo_initial=albedo
 if (update_albedo_from_ice) then
 	call interpolator_init( ice_interp, trim(ice_file_name)//'.nc', rad_lonb_2d, rad_latb_2d, data_out_of_bounds=(/CONSTANT/) )
         call read_ice_conc(Time)
-	call albedo_calc(albedo,Time)
+	call albedo_calc(albedo,Time,bucket_depth(:,:,1)) !mmm just to fit the new function structure
+else if (var_alb) then
+        call albedo_calc(albedo,Time,bucket_depth(:,:,1)) !mmm do dynamic albedo
 else
 	if ( id_albedo > 0 ) used = send_data ( id_albedo, albedo )
 endif
 
 !s begin surface heat capacity calculation
-   if(.not.do_sc_sst.or.(do_sc_sst.and.specify_sst_over_ocean_only)) then
-         land_sea_heat_capacity = depth*RHO_CP
+    if(.not.do_sc_sst.or.(do_sc_sst.and.specify_sst_over_ocean_only)) then
+        land_sea_heat_capacity = depth*RHO_CP
 	if(trim(land_option) .ne. 'input') then
          if ( trop_capacity .ne. depth*RHO_CP .or. np_cap_factor .ne. 1. ) then !s Lines above make trop_capacity=depth*RHO_CP if trop_capacity set to be < 0.
             do j=js,je
@@ -518,11 +536,19 @@ endif
             enddo
          endif
 	else  !trim(land_option) .eq. 'input'
-		where(land) land_sea_heat_capacity = land_h_capacity_prefactor*land_sea_heat_capacity
-	endif !end of if (trim(land_option) .ne. 'input')
+                if (var_hcap) then !mmm adjust heat capacity based on bucket depth
+                        where(bucket_depth(:,:,1) .lt. depth) land_sea_heat_capacity = bucket_depth(:,:,1)*RHO_CP 
+	                where(land_sea_heat_capacity .lt. land_h_capacity_prefactor*depth*RHO_CP) land_sea_heat_capacity = land_h_capacity_prefactor*depth*RHO_CP
+                        if ( id_heat_cap > 0 ) used = send_data ( id_heat_cap,land_sea_heat_capacity,Time )
+                else
+                        where(land) land_sea_heat_capacity = land_h_capacity_prefactor*land_sea_heat_capacity
+	        endif
+        endif !end of if (trim(land_option) .ne. 'input')
     endif !end of if(.not.do_sc_sst)
 
-if ( id_heat_cap > 0 ) used = send_data ( id_heat_cap, land_sea_heat_capacity )
+if (.not. var_hcap) then !mmm
+ if ( id_heat_cap > 0 ) used = send_data ( id_heat_cap, land_sea_heat_capacity )
+endif
 !s end surface heat capacity calculation
 
 module_is_initialized = .true.
@@ -549,7 +575,8 @@ subroutine mixed_layer (                                               &
      drdt_surf,                                                        &
      dhdt_atm,                                                         &
      dedq_atm,                                                         &
-     albedo_out)
+     albedo_out,& 
+     bucket_depth) !mmm adding bucket depth here for dynamic heat capacity/albedo
 
 ! ---- arguments -----------------------------------------------------------
 type(time_type), intent(in)       :: Time, Time_next
@@ -565,7 +592,7 @@ real, intent(in) :: dt
 real, intent(out), dimension(:,:) :: albedo_out
 type(surf_diff_type), intent(inout) :: Tri_surf
 logical, dimension(size(land_mask,1),size(land_mask,2)) :: land_ice_mask
-
+real, intent(in), dimension(:,:) :: bucket_depth !mmm
 
 if(.not.module_is_initialized) then
   call error_mesg('mixed_layer','mixed_layer module is not initialized',FATAL)
@@ -581,7 +608,7 @@ else
 	land_ice_mask=land_mask
 endif
 
-call albedo_calc(albedo_out,Time_next)
+call albedo_calc(albedo_out,Time_next,bucket_depth) !mmm bucket_depth for dynamic albedo
 
 !s Add latent heat flux anomalies before any of the calculations take place
 
@@ -661,8 +688,17 @@ if ((.not.do_sc_sst).or.(do_sc_sst.and.specify_sst_over_ocean_only)) then
   !s use the land_sea_heat_capacity calculated in mixed_layer_init
 
 	! Now update the mixed layer surface temperature using an implicit step
-	!
-	eff_heat_capacity = land_sea_heat_capacity + t_surf_dependence * dt !s need to investigate how this works
+	
+        !mmm dynamic mixed layer
+        if (var_hcap) then !mmm adjust heat capacity based on bucket depth
+         dynamic_heat_capacity = depth*RHO_CP
+         where(bucket_depth .lt. depth) dynamic_heat_capacity = bucket_depth*RHO_CP
+         where(dynamic_heat_capacity .lt. land_h_capacity_prefactor*depth*RHO_CP) dynamic_heat_capacity = land_h_capacity_prefactor*depth*RHO_CP
+         eff_heat_capacity = dynamic_heat_capacity + t_surf_dependence * dt
+         if ( id_heat_cap > 0 ) used = send_data ( id_heat_cap, eff_heat_capacity, Time )
+        else
+	 eff_heat_capacity = land_sea_heat_capacity + t_surf_dependence * dt !s need to investigate how this works
+        endif
 
 	if (any(eff_heat_capacity .eq. 0.0))  then
 	  write(*,*) 'mixed_layer: error', eff_heat_capacity
@@ -700,12 +736,19 @@ end subroutine mixed_layer
 
 !=================================================================================================================================
 
-subroutine albedo_calc(albedo_inout,Time)
+subroutine albedo_calc(albedo_inout,Time,bucket_depth) !mmm need bucket_depth for dynamic albedo
 
 real, intent(out), dimension(:,:) :: albedo_inout
 type(time_type), intent(in)       :: Time
+real, intent(in), dimension(:,:) :: bucket_depth !mmm
 
 albedo_inout=albedo_initial
+
+!mmm dynamic albedo with bucket_depth
+if (var_alb) then
+ where(bucket_depth .eq. 0) albedo_inout = land_albedo_prefactor * albedo_inout
+ if ( id_albedo > 0 ) used = send_data ( id_albedo, albedo_inout, Time )
+endif
 
 if(update_albedo_from_ice) then
 

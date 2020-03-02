@@ -127,7 +127,7 @@ character(len=128), parameter :: tag = &
        Time = Time + Time_step_atmos
 
        if(modulo(na,memuse_interval) == 0 .and. print_memuse) then
-         write( text,'(a,i4)' )'Main loop at timestep=',na
+         write( text,'(a,i10)' )'Main loop at timestep=',na
          call print_memuse_stats(text)
        endif
 

@@ -204,6 +204,7 @@ logical :: json_logging = .false.    ! print steps to std out in a machine reada
 !===============================================================================================
 
 real, dimension(2) :: valid_range_t = (/100.,500./)
+real, dimension(2) :: vrange = (/ -400., 400. /)
 
 namelist /spectral_dynamics_nml/ use_virtual_temperature, damping_option, cutoff_wn,                 &
                                  damping_order, damping_coeff, damping_order_vor, damping_coeff_vor, &
@@ -221,7 +222,9 @@ namelist /spectral_dynamics_nml/ use_virtual_temperature, damping_option, cutoff
                                  raw_filter_coeff,                                                   & !st
                                  graceful_shutdown, json_logging,                                    &
                                  graceful_shutdown,                                                  &
-								 make_symmetric                                                       !GC/RG add make_symmetric option
+		                 make_symmetric,                                                     &  !GC/RG add make_symmetric option
+                                 vrange                                                                 !mmm adding wind range to namelist
+
 
 contains
 
@@ -1565,10 +1568,7 @@ integer :: id_lonb, id_latb, id_phalf, id_lon, id_lat, id_pfull
 integer :: id_pk, id_bk, id_zsurf, ntr
 real :: rad_to_deg
 logical :: used
-real,dimension(2) :: vrange
 character(len=128) :: tname, longname, units
-
-vrange = (/ -400., 400. /)
 
 rad_to_deg = 180./pi
 call get_grid_boundaries(lonb,latb,global=.true.)

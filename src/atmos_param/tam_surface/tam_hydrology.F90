@@ -301,12 +301,14 @@ end if
       lat_halo(i,j) = lat(i-is+1,j-js+1)
     end do
   end do
-  
+
   !Fill in halo points
   call mpp_update_domains( dtd, topo_domain)       !now dtd(:jsd) and dtd(:,jed) are filled in with appropriate values
   call mpp_update_domains( lat_halo, topo_domain)
- 
-  print *,'global min (dtd): ',mpp_global_min(grid_domain,dtd(:,js:je))
+
+  !if (js .eq. 1) then 
+    print *,'global min (dtd): ',mpp_global_min(grid_domain,dtd(:,js:je))
+  !endif 
 
   if ((linear_catch) .and. (input_speed)) &
       call error_mesg('hydrology', &
@@ -356,7 +358,7 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
   real, dimension(size(surf_liq,1),size(surf_liq,2))     :: filt,surf_liq_dt,meth_table_dt,height_dt,diffused, &
                                                             diag_height,sat_flow,resflow,discharge,removal
   integer                                 :: i,j
-
+  
 
   if(previous .eq. current) then
     future = size(surf_liq,3) + 1 - current
@@ -429,7 +431,6 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
 !----------------------------------------------------------------------------
 ! Adjust table height with added infiltration and runoff
 !----------------------------------------------------------------------------
-
   if (do_methane_table) then
    do i=1,size(lon,1)
     do j=1,size(lat,2)
@@ -486,7 +487,6 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
 !-----------------------------------------------------------------------
 ! Update subsurface
 !-----------------------------------------------------------------------
-
   !Update surface to know what height changes to make when methane table reaches topo
    if (do_leapfrog) then
      call perform_leap(surf_liq,surf_liq_dt,previous,current,future)
@@ -981,14 +981,12 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
   	!"Real" diffusion
   	real, dimension(is:ie,js:je) 					:: dt_table,table_diffusion
   	real, dimension(size(liquid,1),size(liquid,2))	:: diag_height
-	
   	
   	px = size(subflow,1)	!number of longitudes on processor
   	py = size(subflow,2)	!number of latitudes on processor	
 	
 	allocate(blon(is:ie+1), blat(js:je+1))
 	call get_grid_boundaries(blon, blat)
-	
     drd = 0.0; drd_north = 0.0; drd_south = 0.0; final_flow = 0.0; dld = 0.0
   	diff = 0.0				!change in methane table height
   	diag_height = height	!overall methane table height 
@@ -1040,7 +1038,9 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
   		end do
 
   		call get_wts_lat(wts_lat)
-		call mpp_update_domains(dld, topo_domain)
+                print *,'dld dim 2 x js: ',js*size(dld,2)
+		!print *,'topo_domain dim 2 x js: ',js*size(topo_domain,2)
+                call mpp_update_domains(dld, topo_domain) !mmm segfaults here when run on multiple cores
 		
 		cp = dld	!cell potentials, in meters
 		
@@ -1132,7 +1132,6 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
             		dfrac_dir(k)	= kmax
             		dfrac_temp(kmax)= 0.
           		end do
- 
 !-----------------------------------------------------------------------------------------
 !8/21/2018 JML
 !This code discretizes Darcy flow
@@ -1185,7 +1184,7 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
                 !combine all volume removals and additions for each cell into 'final_flow' array
   		final_flow = final_flow + drd 
   		call mpp_update_domains( drd_south, topo_domain)
-  		call mpp_update_domains( drd_north, topo_domain) !mmm segfaults if specified # of cores is incorrect
+  		call mpp_update_domains( drd_north, topo_domain) !mmm segfaults here when run on multiple cores
 		final_flow(:,js) = final_flow(:,js) + drd_north(:,jsd) 
 		final_flow(:,je) = final_flow(:,je) + drd_south(:,jed)
 		

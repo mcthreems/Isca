@@ -15,7 +15,7 @@ module tam_surface_mod
 use fms_mod,          only: error_mesg, FATAL, close_file, mpp_pe, mpp_root_pe, &
                             write_version_number, file_exist, check_nml_error,  &
                             open_namelist_file, stdlog, read_data, write_data, nullify_domain
-use transforms_mod,   only: grid_domain 
+use transforms_mod,   only: grid_domain, get_grid_domain 
 use diag_manager_mod, only: diag_axis_init, register_diag_field, send_data
 use field_manager_mod,only: MODEL_ATMOS
 use tracer_manager_mod,only:get_tracer_index
@@ -103,8 +103,9 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
 
   id = size(lon,1)
   jd = size(lat,2)
+  call get_grid_domain(is, ie, js, je)
 
-  allocate (tam_tgrnd(id,jd,nlayers))
+  allocate (tam_tgrnd(is:ie,js:je,nlayers))
   
 !-----------------------------------------------------------------------
 ! Get tracer index for specific humidity
@@ -182,11 +183,11 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
          en_t, en_q, alpha_t, alpha_q, alpha_lw, beta_t, beta_q, beta_lw, &
          hf, dhfdT
    
-   real, dimension(nlayers) :: z  !layer depth (m)
-   real, dimension(nlayers) :: zi !layer interface depth
-   real, dimension(nlayers) :: dz !layer thickness
-   real, dimension(nlayers) :: cv !heat capacity (J/m2/K)
-   real, dimension(nlayers) :: tk !thermal conductivity
+   real, dimension(0:nlayers) :: z  !layer depth (m)
+   real, dimension(0:nlayers) :: zi !layer interface depth
+   real, dimension(0:nlayers) :: dz !layer thickness
+   real, dimension(0:nlayers) :: cv !heat capacity (J/m2/K)
+   real, dimension(0:nlayers) :: tk !thermal conductivity
 
 !-----------------------------------------------------------------------
 ! Net heat flux into the surface; derivatives of flux wrt temperature  
@@ -261,7 +262,7 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
         endif
       enddo
 
-      t_ground(:) = tam_tgrnd(i,j,:)
+      t_ground(:) = tam_tgrnd(i+is-1,j+js-1,:)
       
 !-----------------------------------------------------------------------
 ! If grid is a "lake," perform convective adjustment  
@@ -329,10 +330,10 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
       call Tridiagonal (size(at), at, bt, ct, rt, &
                         t_ground(1:nlayers))
 
-      Surf_diff%delta_t(i,j) = fn_t(i,j) + en_t(i,j) * (t_ground(1) - tam_tgrnd(i,j,1))
-      Surf_diff%delta_tr(i,j,sphum) = fn_q(i,j) + en_q(i,j) * (t_ground(1) - tam_tgrnd(i,j,1))
+      Surf_diff%delta_t(i,j) = fn_t(i,j) + en_t(i,j) * (t_ground(1) - tam_tgrnd(i+is-1,j+js-1,1))
+      Surf_diff%delta_tr(i,j,sphum) = fn_q(i,j) + en_q(i,j) * (t_ground(1) - tam_tgrnd(i+is-1,j+js-1,1))
       
-      tam_tgrnd(i,j,:) = t_ground(:)
+      tam_tgrnd(i+is-1,j+js-1,:) = t_ground(:)
       
     end do
   end do

@@ -880,11 +880,11 @@ end select
         axes(1:2), Time, 'Rain from convection','kg/m/m/s')
 !endif
 
-
 !mmm Select hydro cases
 select case(r_hydro_scheme)
 
 case(TAM_HYDRO)
+       
 	call tam_hydrology_init(z_surf,dtd,surf_liq_begin,liq_table_begin,height_begin, &
 	                    init_surf_liq,init_liq_table,porosity,rad_lat,rad_lon)
                   
@@ -956,8 +956,7 @@ case(TAM_HYDRO)
 		if ((rad_lat(1,j)*180./pi .lt. 20) .and. (rad_lat(1,j)*180./pi .gt. -45)) surf_liq(:,j,:) = 0.0
 	 end do
 	endif  
-
-	filename= 'INPUT/subsurface.res.nc'
+        filename= 'INPUT/subsurface.res.nc'
 	call nullify_domain()
 	if (file_exist( trim( filename ) ) ) then
 	 if((mpp_pe() == mpp_root_pe())) print *,'tam_physics module: Reading subsurface restart file: ',trim(filename)
@@ -971,7 +970,6 @@ case(TAM_HYDRO)
 	   height(:,:,nt) = height_begin
 	 end do
 	endif
-	
 	call tam_surface_init (rad_lon, rad_lat, axes, Time)  !mmm Initialize surface
 	
 end select
@@ -1007,8 +1005,9 @@ endif
 #endif
 
 if(turb) then
+   axes = get_axis_id()
    call vert_turb_driver_init (rad_lonb_2d, rad_latb_2d, ie-is+1,je-js+1, &
-                 num_levels,get_axis_id(),Time, doing_edt, doing_entrain)
+                 num_levels,axes,Time, doing_edt, doing_entrain)
 
    axes = get_axis_id()
    id_diff_dt_ug = register_diag_field(mod_name, 'dt_ug_diffusion',        &
@@ -1070,7 +1069,6 @@ rain = 0.0; snow = 0.0; precip = 0.0
 if(r_hydro_scheme .eq. TAM_HYDRO) then
 	albedo    = vis_albedo
 	albedoi   = ir_albedo
-	
 	t_surf(:,:)    = tam_tgrnd(:,:,1)
 	
 	if (var_surf_prop) then
@@ -1163,8 +1161,7 @@ case(RAS_CONV)
                 mc,   tracer(:,:,:), tracer(:,:,:),                          &
                tracer(:,:,:),  tracertnd(:,:,:),                             &
                tracertnd(:,:,:), tracertnd(:,:,:))
-                
-
+   
       !update tendencies - dT and dq are done after cases
       tg_tmp = tg(:,:,:,previous) + conv_dt_tg
       qg_tmp = grid_tracers(:,:,:,previous,nsphum) + conv_dt_qg
@@ -1173,10 +1170,15 @@ case(RAS_CONV)
 
       precip     = precip + rain + snow
 
+      !mmm Add bucket to RAS (can potentially just make this 0 to see if it's
+      !giving weird values)
+      depth_change_conv = rain/liq_dens
+
    if(id_conv_dt_qg > 0) used = send_data(id_conv_dt_qg, conv_dt_qg, Time)
    if(id_conv_dt_tg > 0) used = send_data(id_conv_dt_tg, conv_dt_tg, Time)
    if(id_conv_rain  > 0) used = send_data(id_conv_rain, precip, Time)
-
+   !if(id_cape  > 0) used = send_data(id_cape, cape, Time)
+   !if(id_cin  > 0) used = send_data(id_cin, cin, Time)
 
 case(NO_CONV)
    tg_tmp = tg(:,:,:,previous)
@@ -1206,7 +1208,7 @@ if (r_conv_scheme .ne. DRY_CONV) then
 
   cond_dt_tg = cond_dt_tg/delta_t
   cond_dt_qg = cond_dt_qg/delta_t
-  if (r_hydro_scheme .eq. BUCKET) then
+  if (r_hydro_scheme .eq. BUCKET_HYDRO) then
   	depth_change_cond = rain/liq_dens     ! RG Add bucket
   endif
   rain       = rain/delta_t
@@ -1390,7 +1392,6 @@ case(TAM_HYDRO)
 	kd = size(p_full,3)
 	ps(:,:) = p_half(:,:,size(p_half,3),previous)
 	zkd(:,:)   = (ps(:,:)-p_full(:,:,kd,previous)) / (grav*(ps(:,:)/( rdgas*tg(:,:,kd,previous))))
-
 	call tam_surf_flux_2d ( tg(:,:,kd,previous), grid_tracers(:,:,kd,previous,1), &
 					  ug(:,:,kd,previous), vg(:,:,kd,previous), &
 					  p_full(:,:,kd,previous), zkd, ps, t_surf, surf_liq(:,:,current),&
@@ -1570,7 +1571,8 @@ if(turb) then
                            drdt_surf(:,:),                                 &
                             dhdt_atm(:,:),                                 &
                             dedq_atm(:,:),                                 &
-                              albedo(:,:))
+                              albedo(:,:),                                 &
+                bucket_depth(:,:,current)) !mmm adding for dynamic heat capacity/albedo (intent in)
    
    !mmm use TAM calculation for Tri_surf, t_surf, and tgrnd
    else if(r_hydro_scheme .eq. TAM_HYDRO) then
@@ -1585,7 +1587,6 @@ if(turb) then
 		if (id_tsfc > 0) used = send_data (id_tsfc, t_surf, Time, is, js)
    
    endif
-
    call gcm_vert_diff_up (1, 1, delta_t, Tri_surf, dt_tg(:,:,:), dt_tracers(:,:,:,nsphum), dt_tracers(:,:,:,:))
    
    if(id_diff_dt_ug > 0) used = send_data(id_diff_dt_ug, dt_ug - non_diff_dt_ug, Time)
@@ -1598,7 +1599,6 @@ endif ! if(turb) then
 !s Adding relative humidity calculation so as to allow comparison with Frierson's thesis.
    call rh_calc (p_full(:,:,:,previous),tg_tmp,qg_tmp,RH)
    if(id_rh >0) used = send_data(id_rh, RH*100., Time)
-
 !-----------------------------------------------------------------------
 !mmm Do hydrology
 !-----------------------------------------------------------------------
@@ -1620,6 +1620,7 @@ case(BUCKET_HYDRO)
 	endif
 
 	! bucket time tendency
+        !where (depth_change_cond .gt. 100) depth_change_cond = 0.0 !mmm trying to mitigate the oddly large values we're getting
 	dt_bucket = depth_change_cond + depth_change_conv - depth_change_lh
 	!change in bucket depth in one leapfrog timestep [m]                                 
 
@@ -1648,15 +1649,21 @@ case(BUCKET_HYDRO)
 			bucket_depth(:,:,future) = max_bucket_depth_land
 	   end where
 
+        !mmm Want to double check bucket depth changes while running
+        if (maxval(dt_bucket) .gt. 100) then
+         print *,'Bucket Depth Change Too Large: ',maxval(dt_bucket(:,:))
+         print *,'Condensation Constribution: ',maxval(depth_change_cond(:,:))
+         print *,'Convection Contribution: ',maxval(depth_change_conv(:,:))
+         print *,'Evaporation: ',maxval(depth_change_lh(:,:))
+        endif
+
 	if(id_bucket_depth > 0) used = send_data(id_bucket_depth, bucket_depth(:,:,future), Time)
 	if(id_bucket_depth_conv > 0) used = send_data(id_bucket_depth_conv, depth_change_conv(:,:), Time)
 	if(id_bucket_depth_cond > 0) used = send_data(id_bucket_depth_cond, depth_change_cond(:,:), Time)
 	if(id_bucket_depth_lh > 0) used = send_data(id_bucket_depth_lh, depth_change_lh(:,:), Time)
 
 ! end Add bucket section
-
 case(TAM_HYDRO) !mmm tam hydro case (currently uses total precip, including snow)
-	
 	call tam_hydrology_driver(surf_liq,run_res,liq_table,height,runoff,infiltration,gle,run_out,discharge,recharge, &
 						subflow,precip,flux_q,porosity,rad_lat,rad_lon,current,previous,future,delta_t,delta_t,do_gle,      &
 						do_liq_table, evap_thresh) !mmm this took two separate delta_t values in original, couldn't figure out how they were different

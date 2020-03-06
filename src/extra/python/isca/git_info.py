@@ -26,7 +26,7 @@
         if not (repo and commit):
             try:
                 git_dir = self.srcdir+'/.git'
-                git_status_output = sh.git("--git-dir="+git_dir, "--work-tree="+self.srcdir, "status", "-b", "--porcelain")
+                git_status_output = sh.git("--git-dir="+git_dir, "--work-tree="+self.srcdir, "status", "--porcelain")
                 git_status_output = str(git_status_output)
                 git_status_output = git_status_output.split("\n")
                 git_status_final = ["Running from GFDL_BASE repo, so adding git status output.\n", git_status_output[0]]

@@ -143,7 +143,7 @@ class CodeBase(Logger):
 
             # if there are any uncommited changes in the working directory,
             # add those to the file too
-            source_status = self.git.status("-b", "--porcelain").stdout.decode('utf8')
+            source_status = self.git.status("--porcelain").stdout.decode('utf8')
             # filter the source status for changes in specific files
             filetypes = ('.f90', '.inc', '.c')
             source_status = [line for line in source_status.split('\n')

@@ -201,10 +201,12 @@ real    :: damping_coeff       = 1.15740741e-4, & ! (one tenth day)**-1
            raw_filter_coeff    = 1.0     !st Default value of 1.0 turns the RAW part of the filtering off. 0.5 is the desired value, but this appears unstable. Requires further testing.
 
 logical :: json_logging = .false.    ! print steps to std out in a machine readable format
+
+real,dimension(2) :: vrange = (/ -400., 400. /) !mmm added to namelist
+
 !===============================================================================================
 
 real, dimension(2) :: valid_range_t = (/100.,500./)
-real, dimension(2) :: vrange = (/ -400., 400. /)
 
 namelist /spectral_dynamics_nml/ use_virtual_temperature, damping_option, cutoff_wn,                 &
                                  damping_order, damping_coeff, damping_order_vor, damping_coeff_vor, &
@@ -222,9 +224,8 @@ namelist /spectral_dynamics_nml/ use_virtual_temperature, damping_option, cutoff
                                  raw_filter_coeff,                                                   & !st
                                  graceful_shutdown, json_logging,                                    &
                                  graceful_shutdown,                                                  &
-		                 make_symmetric,                                                     &  !GC/RG add make_symmetric option
-                                 vrange                                                                 !mmm adding wind range to namelist
-
+								 make_symmetric,                                                     &  !GC/RG add make_symmetric option
+								 vrange !mmm made vrange a namelist variable
 
 contains
 
@@ -955,11 +956,15 @@ if(minval(tg(:,:,:,future)) < valid_range_t(1) .or. maxval(tg(:,:,:,future)) > v
                ii=i1
                jj=j1
                kk=k1
+               write(*,'(a)')'Test'
                exit
             endif
          enddo
       enddo
    enddo
+   write(*,'(a,f10.3)')'extrtmp: ',extrtmp
+   write(*,'(a,f10.3)')'maxval: ',maxval(tg(:,:,:,future))
+   write(*,'(a,f10.3)')'minval: ',minval(tg(:,:,:,future))
    write(*,'(a,i3,a,3i3,2f10.3)')'PE, location, Textr(curr,future): ',mpp_pe()&
         &,': ',ii,jj,kk&
         &,tg(ii,jj,kk,current)&
@@ -1568,7 +1573,10 @@ integer :: id_lonb, id_latb, id_phalf, id_lon, id_lat, id_pfull
 integer :: id_pk, id_bk, id_zsurf, ntr
 real :: rad_to_deg
 logical :: used
+!real,dimension(2) :: vrange
 character(len=128) :: tname, longname, units
+
+!vrange = (/ -400., 400. /)
 
 rad_to_deg = 180./pi
 call get_grid_boundaries(lonb,latb,global=.true.)

@@ -290,8 +290,11 @@ end if
   layout = (/1,npes/)
   call mpp_define_domains( (/1,nx,1,ny/), layout, topo_domain, yhalo=1)
 
-  call mpp_get_data_domain( topo_domain, isd, ied, jsd, jed) !isd = is = 0, ied = ie = 64; jsd = js-1, jed = je+1
+  !mmm call mpp_get_data_domain( topo_domain, isd, ied, jsd, jed) !isd = is = 0, ied = ie = 64; jsd = js-1, jed = je+1
   call mpp_get_compute_domain( topo_domain, is, ie, js, je )
+  jsd = js - 1 !mmm changing this to see if it prevents the segfaults
+  jed = je + 1
+  
   allocate( dtd(is:ie,jsd:jed) )  !dtd = Data Topography Domain 
   allocate( lat_halo(is:ie,jsd:jed)) 
   dtd = 0.0; lat_halo = 0.0
@@ -305,7 +308,7 @@ end if
   !Fill in halo points
   call mpp_update_domains( dtd, topo_domain)       !now dtd(:jsd) and dtd(:,jed) are filled in with appropriate values
   call mpp_update_domains( lat_halo, topo_domain)
-
+  
   !if (js .eq. 1) then 
     print *,'global min (dtd): ',mpp_global_min(grid_domain,dtd(:,js:je))
   !endif 
@@ -675,6 +678,7 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
   end do
 
   call get_wts_lat(wts_lat)
+  
   call mpp_update_domains( dld, topo_domain)
  
  !Cell potential = Topography + Surface liquid
@@ -802,9 +806,10 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
   final_runoff = final_runoff + drd                 
 
   !Fill in halo points, can now access flow moved in from other processors
+  
   call mpp_update_domains( drd_south, topo_domain)
   call mpp_update_domains( drd_north, topo_domain)
-
+  
   !On southern edge of processor, add flow that moved north
   final_runoff(:,js) = final_runoff(:,js) + drd_north(:,jsd) 
   !Likewise on northern edge. From prior example, at (10,16), we can access
@@ -964,8 +969,8 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
   	integer :: i,j,k,ix,jx,ixs,ixn,ilw,ilws,ilwn,ile,iles,ilen,jln,jls
   	integer :: px,py
   	integer, dimension(nx+2) :: ii 
-
-  	real, dimension(is:ie,jsd:jed) 	:: dld,drd,drd_north,drd_south,final_flow !drd's and final_flow are volumes!
+        
+        real, dimension(is:ie,jsd:jed) 	:: dld,drd,drd_north,drd_south,final_flow !drd's and final_flow are volumes!
   	real, dimension(ny) 			:: wts_lat
   	real, allocatable, dimension(:) :: blon,blat
 
@@ -1038,10 +1043,11 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
   		end do
 
   		call get_wts_lat(wts_lat)
-                print *,'dld dim 2 x js: ',js*size(dld,2)
-		!print *,'topo_domain dim 2 x js: ',js*size(topo_domain,2)
-                call mpp_update_domains(dld, topo_domain) !mmm segfaults here when run on multiple cores
-		
+             
+                if (js .eq. 1) print *,'Check 1',(/js,je/)
+                if (js .eq. 1) print *,'Check 2',ny
+		call mpp_update_domains(dld, topo_domain) !mmm segfaults here when run on multiple cores
+	        print *,'Check 3',js	
 		cp = dld	!cell potentials, in meters
 		
 		do j = 1,py
@@ -1184,7 +1190,9 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
                 !combine all volume removals and additions for each cell into 'final_flow' array
   		final_flow = final_flow + drd 
   		call mpp_update_domains( drd_south, topo_domain)
+  		
   		call mpp_update_domains( drd_north, topo_domain) !mmm segfaults here when run on multiple cores
+  		
 		final_flow(:,js) = final_flow(:,js) + drd_north(:,jsd) 
 		final_flow(:,je) = final_flow(:,je) + drd_south(:,jed)
 		

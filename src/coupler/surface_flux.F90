@@ -267,6 +267,7 @@ real    :: land_evap_prefactor  =  1.0    !s Default is that land makes no diffe
 real    :: flux_heat_gp  =  5.7    !s Default value for Jupiter of 5.7 Wm^-2
 real    :: diabatic_acce =  1.0    !s Diabatic acceleration??
 
+logical :: exposed_buckets = .false. !mmm flag for using exposed buckets. This treats land buckets like ocean buckets in certain calculations
 
 namelist /surface_flux_nml/ no_neg_q,             &
                             use_virtual_temp,     &
@@ -282,7 +283,8 @@ namelist /surface_flux_nml/ no_neg_q,             &
                             land_humidity_prefactor, & !s Added to make land 'dry', i.e. to decrease the evaporative heat flux in areas of land.
                             land_evap_prefactor, & !s Added to make land 'dry', i.e. to decrease the evaporative heat flux in areas of land.
                             flux_heat_gp,         &    !s prescribed lower boundary heat flux on a giant planet
-			    diabatic_acce
+			    diabatic_acce,        &
+                            exposed_buckets             !mmm
 
 
 
@@ -589,43 +591,37 @@ subroutine surface_flux_1d (                                           &
 !RG Add bucket - if bucket is on evaluate fluxes based on moisture availability.
 !RG Note changes to avail statements to allow bucket to be switched on or off	  
   if (bucket) then
-	  where (avail)
-	      ! begin LJJ addition
-  		where(land)
-			where (bucket_depth >= max_bucket_depth_land*0.75)
-				flux_q    =  rho_drag * (q_surf0 - q_atm)
-			elsewhere	
-                flux_q    =  bucket_depth/(max_bucket_depth_land*0.75) * rho_drag * (q_surf0 - q_atm) ! flux of water vapor  (Kg/(m**2 s))
-			end where
-		elsewhere
-	        flux_q    =  rho_drag * (q_surf0 - q_atm) ! flux of water vapor  (Kg/(m**2 s))
-		end where
+	      ! begin LJJ addition !mmm had to rewrite since the compiler didn't
+	      ! like if statements within the where blocks
+              if (exposed_buckets) then !mmm using this to avoid getting small evaporation with big max buckets
+               where (avail) flux_q    =  rho_drag * (q_surf0 - q_atm)
+              else
+               where (avail .and. (.not. land .or. (land .and. bucket_depth >= max_bucket_depth_land*0.75))) flux_q = rho_drag * (q_surf0 - q_atm)
+               where (avail .and. land .and. bucket_depth < max_bucket_depth_land*0.75) flux_q = bucket_depth/(max_bucket_depth_land*0.75) * rho_drag * (q_surf0 - q_atm) ! flux of water vapor  (Kg/(m**2 s)) 
+              endif
 		
-	    depth_change_lh_1d  = flux_q * dt/dens_h2o 
-	    where (flux_q > 0.0 .and. bucket_depth < depth_change_lh_1d) ! where more evaporation than what's in bucket, empty bucket
+	    where (avail) depth_change_lh_1d  = flux_q * dt/dens_h2o 
+	    where (avail .and. flux_q > 0.0 .and. bucket_depth < depth_change_lh_1d) ! where more evaporation than what's in bucket, empty bucket
 	        flux_q = bucket_depth * dens_h2o / dt
 	        depth_change_lh_1d = flux_q * dt / dens_h2o
 	    end where 
     
-	    where (bucket_depth <= 0.0)
+	    where (avail .and. bucket_depth <= 0.0)
 	      dedt_surf = 0.
 	      dedq_surf = 0.
 	      dedq_atm = 0.
-	    elsewhere
+	    end where
+            where (avail .and. bucket_depth > 0.0)
 	      dedq_surf = 0.
 	      dedq_atm = -rho_drag ! d(latent heat flux)/d(atmospheric mixing ratio)
-		  where(land)
-			  where (bucket_depth >= max_bucket_depth_land*0.75)
-				  dedt_surf =  rho_drag * (q_sat1 - q_sat) *del_temp_inv
-			  elsewhere
-      	          dedt_surf =  bucket_depth/(max_bucket_depth_land*0.75) * rho_drag * (q_sat1 - q_sat) *del_temp_inv
-			  end where
-		  elsewhere
- 	          dedt_surf =  rho_drag * (q_sat1 - q_sat) *del_temp_inv
-		  end where
+            end where              
+            if (exposed_buckets) then !mmm
+               where (avail .and. bucket_depth > 0.0) dedt_surf =  rho_drag * (q_sat1 - q_sat) * del_temp_inv
+            else
+	       where (avail .and. bucket_depth > 0.0 .and. (.not. land .or. (land .and. bucket_depth >= max_bucket_depth_land*0.75))) dedt_surf =  rho_drag * (q_sat1 - q_sat) * del_temp_inv
+	       where (avail .and. bucket_depth > 0.0 .and. land .and. bucket_depth < max_bucket_depth_land*0.75) dedt_surf =  bucket_depth/(max_bucket_depth_land*0.75) * rho_drag * (q_sat1 - q_sat) *del_temp_inv
+            endif
 		  
-	    end where
-	  end where    
   else
 
 !RG otherwise revert to simple land model

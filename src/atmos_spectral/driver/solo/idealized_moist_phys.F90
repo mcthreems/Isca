@@ -8,7 +8,7 @@ module idealized_moist_phys_mod
 
 use fms_mod, only: write_version_number, file_exist, close_file, stdlog, error_mesg, NOTE, FATAL, read_data, field_size, uppercase, mpp_pe, mpp_root_pe, nullify_domain, write_data
 
-use           constants_mod, only: grav, rdgas, rvgas, cp_air, PSTD_MKS, liq_dens, pi !mj cp_air needed for rrtmg !s pstd_mks needed for pref calculation
+use           constants_mod, only: grav, rdgas, rvgas, cp_air, PSTD_MKS, liq_dens, pi, radius !mj cp_air needed for rrtmg !s pstd_mks needed for pref calculation
 
 use        time_manager_mod, only: time_type, get_time, operator( + )
 
@@ -46,7 +46,7 @@ use    press_and_geopot_mod, only: pressure_variables
 
 use         mpp_domains_mod, only: mpp_get_global_domain !s added to enable land reading
 
-use          transforms_mod, only: grid_domain
+use          transforms_mod, only: grid_domain, get_grid_boundaries !mmm added grid boundary function
 
 use tracer_manager_mod, only: get_number_tracers, query_method
 
@@ -115,7 +115,7 @@ logical :: do_ras = .false.
 
 !mmm Hydrology scheme options
 character(len=256) :: hydro_scheme = 'unset'  !< Use a specific hydrology scheme.  Valid options
-integer, parameter :: NO_HYDRO = 0,      &    !! are NONE, BUCKET_HYDRO, TAM_HYDRO
+integer, parameter :: NO_HYDRO = 0,      &    !! are NO_HYDRO, BUCKET_HYDRO, TAM_HYDRO
                       BUCKET_HYDRO = 1,  &
                       TAM_HYDRO = 2
 
@@ -129,6 +129,16 @@ real :: init_bucket_depth_land = 20.
 real :: max_bucket_depth_land = 0.15 ! default from Manabe 1969
 real :: robert_bucket = 0.04   ! default robert coefficient for bucket depth LJJ
 real :: raw_bucket = 0.53       ! default raw coefficient for bucket depth LJJ
+logical :: mmm_water_cons = .false. !mmm flag for brute-force water conservation in bucket depth
+real, allocatable, dimension(:)   :: lonb, latb !mmm variables for the above flag
+real, allocatable, dimension(:,:) :: gareas
+real :: bdres
+real, allocatable, dimension(:,:,:) :: dpress
+real :: atres
+real :: gres
+real :: refres
+real :: resdev
+real :: devrat
 ! end RG Add bucket
 
 !mmm add TAM hydrology options (some of these are very Titan-oriented, so may not be necessary to include)
@@ -197,7 +207,7 @@ namelist / idealized_moist_phys_nml / turb, lwet_convection, do_bm, do_ras, roug
                                       threshold_liq, init_lakes, even_polar_liq, wetland_latn, &
                                       wetland_lats, init_wetlands, init_surf_liq, init_liq_table, &
                                       porosity, evap_thresh, do_gle, do_liq_table, sin_z, gle_alpha, &
-                                      depth_scale, negate_eq, vis_albedo, liq_albedo, ir_albedo
+                                      depth_scale, negate_eq, vis_albedo, liq_albedo, ir_albedo, mmm_water_cons !mmm
 
 
 integer, parameter :: num_time_levels = 2 !RG Add bucket - number of time levels added to allow timestepping in this module
@@ -288,6 +298,7 @@ real, allocatable, dimension(:,:) ::                                          &
      precip                    ! cumulus rain  + resolved rain  + resolved snow
 
 real, allocatable, dimension(:,:,:) :: &
+     virga,          &   !mmm virga from condensation scheme
      t_ref,          &   ! relaxation temperature for bettsmiller scheme
      q_ref               ! relaxation moisture for bettsmiller scheme
 
@@ -303,6 +314,7 @@ integer ::           &
      id_conv_rain,   &   ! rain from convection
      id_cond_rain,   &   ! rain from condensation
      id_precip,      &   ! rain and snow from condensation and convection
+     id_virga,       &   ! virga from condensation
      id_conv_dt_tg,  &   ! temperature tendency from convection
      id_conv_dt_qg,  &   ! temperature tendency from convection
      id_cond_dt_tg,  &   ! temperature tendency from condensation
@@ -563,6 +575,7 @@ allocate(invtau_t_relaxation  (is:ie, js:je))
 allocate(rain         (is:ie, js:je)); rain = 0.0
 allocate(snow         (is:ie, js:je)); snow = 0.0
 allocate(precip       (is:ie, js:je)); precip = 0.0
+allocate(virga        (is:ie, js:je, num_levels)); virga = 0.0 !mmm
 allocate(convflag     (is:ie, js:je))
 allocate(convect      (is:ie, js:je)); convect = .false.
 
@@ -577,6 +590,12 @@ allocate(pref(num_levels+1)) !s reference pressure profile, as in spectral_physi
 allocate(p_half_1d(num_levels+1), ln_p_half_1d(num_levels+1))
 allocate(p_full_1d(num_levels  ), ln_p_full_1d(num_levels  ))
 allocate(capeflag     (is:ie, js:je))
+
+!mmm allocating mmm_water_cons variables
+allocate(lonb (is:ie+1))
+allocate(latb (js:je+1))
+allocate(gareas (is:ie, js:je))
+allocate(dpress (is:ie, js:je, num_levels))
 
 !mmm allocating TAM variables
 allocate(dtd (is:ie, js:je))
@@ -659,7 +678,7 @@ else if(uppercase(trim(hydro_scheme)) == 'TAM_HYDRO') then
   
 else
   call error_mesg('idealized_moist_phys','"'//trim(hydro_scheme)//'"'//' is not a valid hydrology scheme.'// &
-      ' Choices are NONE, BUCKET, TAM_HYDRO', FATAL)
+      ' Choices are NONE, BUCKET_HYDRO, TAM_HYDRO', FATAL)
 endif
 !mmm end choose hydro scheme
 
@@ -714,8 +733,10 @@ id_cond_dt_tg = register_diag_field(mod_name, 'dt_tg_condensation',        &
      axes(1:3), Time, 'Temperature tendency from condensation','K/s')
 id_cond_rain = register_diag_field(mod_name, 'condensation_rain',          &
      axes(1:2), Time, 'Rain from condensation','kg/m/m/s')
-id_precip = register_diag_field(mod_name, 'precipitation',          &
+id_precip = register_diag_field(mod_name, 'precipitation',                 &
      axes(1:2), Time, 'Precipitation from resolved, parameterised and snow','kg/m/m/s')
+id_virga = register_diag_field(mod_name, 'virga',                          &
+     axes(1:3), Time, 'Virga from condensation','kg/m/m/s') !mmm
 id_cape = register_diag_field(mod_name, 'cape',          &
      axes(1:2), Time, 'Convective Available Potential Energy','J/kg')
 id_cin = register_diag_field(mod_name, 'cin',          &
@@ -1030,7 +1051,7 @@ subroutine idealized_moist_phys(Time, p_half, p_full, z_half, z_full, ug, vg, tg
 
 type(time_type),            intent(in)    :: Time
 real, dimension(:,:,:,:),   intent(in)    :: p_half, p_full, z_half, z_full, ug, vg, tg
-real, dimension(:,:,:,:,:), intent(in)    :: grid_tracers
+real, dimension(:,:,:,:,:), intent(in)    :: grid_tracers !mmm previously made this inout for mmm_water_cons
 integer,                    intent(in)    :: previous, current
 real, dimension(:,:,:),     intent(inout) :: dt_ug, dt_vg, dt_tg
 real, dimension(:,:,:,:),   intent(inout) :: dt_tracers
@@ -1172,7 +1193,7 @@ case(RAS_CONV)
 
       !mmm Add bucket to RAS (can potentially just make this 0 to see if it's
       !giving weird values)
-      depth_change_conv = rain/liq_dens
+      depth_change_conv = precip/liq_dens
 
    if(id_conv_dt_qg > 0) used = send_data(id_conv_dt_qg, conv_dt_qg, Time)
    if(id_conv_dt_tg > 0) used = send_data(id_conv_dt_tg, conv_dt_tg, Time)
@@ -1199,11 +1220,11 @@ dt_tracers(:,:,:,nsphum) = dt_tracers(:,:,:,nsphum) + conv_dt_qg
 if (r_conv_scheme .ne. DRY_CONV) then
   ! Large scale convection is a function of humidity only.  This is
   ! inconsistent with the dry convection scheme, don't run it!
-  rain = 0.0; snow = 0.0
+  rain = 0.0; snow = 0.0; virga = 0.0 !mmm
   call lscale_cond (         tg_tmp,                          qg_tmp,        &
              p_full(:,:,:,previous),          p_half(:,:,:,previous),        &
                               coldT,                            rain,        &
-                               snow,                      cond_dt_tg,        &
+                               snow, virga,               cond_dt_tg,        & !mmm added virga variable
                          cond_dt_qg )
 
   cond_dt_tg = cond_dt_tg/delta_t
@@ -1214,6 +1235,7 @@ if (r_conv_scheme .ne. DRY_CONV) then
   rain       = rain/delta_t
   snow       = snow/delta_t
   precip     = precip + rain + snow
+  virga      = virga/delta_t !mmm
 
   dt_tg = dt_tg + cond_dt_tg
   dt_tracers(:,:,:,nsphum) = dt_tracers(:,:,:,nsphum) + cond_dt_qg
@@ -1222,6 +1244,7 @@ if (r_conv_scheme .ne. DRY_CONV) then
   if(id_cond_dt_tg > 0) used = send_data(id_cond_dt_tg, cond_dt_tg, Time)
   if(id_cond_rain  > 0) used = send_data(id_cond_rain, rain, Time)
   if(id_precip     > 0) used = send_data(id_precip, precip, Time)
+  if(id_virga      > 0) used = send_data(id_virga, virga, Time) !mmm
 
 endif
 
@@ -1620,10 +1643,13 @@ case(BUCKET_HYDRO)
 	endif
 
 	! bucket time tendency
-        !where (depth_change_cond .gt. 100) depth_change_cond = 0.0 !mmm trying to mitigate the oddly large values we're getting
-	dt_bucket = depth_change_cond + depth_change_conv - depth_change_lh
-	!change in bucket depth in one leapfrog timestep [m]                                 
+        !mmm trying to investigate the oddly large values we're getting
+        if (maxval(-1.0*depth_change_lh(:,:)) .gt. 10) print *,'Large Condensation from Surface Flux: ',maxval(-1.0*depth_change_lh(:,:))
+        dt_bucket = depth_change_cond + depth_change_conv - depth_change_lh
+        !change in bucket depth in one leapfrog timestep [m]                                 
 
+    
+    
 	! use the raw filter in leapfrog time stepping
 
 	filt(:,:) = bucket_depth(:,:,previous) - 2.0 * bucket_depth(:,:,current)
@@ -1649,14 +1675,30 @@ case(BUCKET_HYDRO)
 			bucket_depth(:,:,future) = max_bucket_depth_land
 	   end where
 
-        !mmm Want to double check bucket depth changes while running
-        if (maxval(dt_bucket) .gt. 100) then
-         print *,'Bucket Depth Change Too Large: ',maxval(dt_bucket(:,:))
-         print *,'Condensation Constribution: ',maxval(depth_change_cond(:,:))
-         print *,'Convection Contribution: ',maxval(depth_change_conv(:,:))
-         print *,'Evaporation: ',maxval(depth_change_lh(:,:))
-        endif
+	if(mmm_water_cons) then !mmm trying a brute-force water conservation
+     
+     call get_grid_boundaries(lonb, latb)
+     do i = is,ie
+      do j = js,je
+       gareas(i,j) = radius**2*abs(lonb(i)-lonb(i+1))*abs(sin(latb(j))-sin(latb(j+1)))
+      enddo
+     enddo
+     bdres = sum(bucket_depth(:,:,future)*gareas*liq_dens)
+     dpress = p_half(:,:,2:size(p_half,3),future) - p_half(:,:,1:size(p_half,3)-1,future)
+     atres = sum(gareas*sum((grid_tracers(:,:,:,previous,nsphum)+delta_t*dt_tracers(:,:,:,nsphum))*dpress,3)/9.8*liq_dens) !mmm trying previous, may need to change to current
+	 !atres = sum(gareas*sum((grid_tracers(:,:,:,current,nsphum)+delta_t*dt_tracers(:,:,:,nsphum))*dpress,3)/9.8*liq_dens) !mmm trying current, with dt
+	 !atres = sum(gareas*sum(grid_tracers(:,:,:,current,nsphum)*dpress,3)/9.8*liq_dens) !mmm trying current, without dt
+	 gres = bdres+atres
+	 refres = sum(init_bucket_depth_land*gareas*liq_dens)
+	 resdev = refres - gres
+	 if(resdev >= 0.01*refres) then !mmm decided to only do the adjustment to the buckets
+	  devrat = (refres - atres)/bdres
+	  bucket_depth(:,:,future) = devrat*bucket_depth(:,:,future)
+	  !grid_tracers(:,:,:,previous,nsphum) = devrat*grid_tracers(:,:,:,previous,nsphum)
+	 endif
 
+    endif
+    
 	if(id_bucket_depth > 0) used = send_data(id_bucket_depth, bucket_depth(:,:,future), Time)
 	if(id_bucket_depth_conv > 0) used = send_data(id_bucket_depth_conv, depth_change_conv(:,:), Time)
 	if(id_bucket_depth_cond > 0) used = send_data(id_bucket_depth_cond, depth_change_cond(:,:), Time)
@@ -1664,6 +1706,7 @@ case(BUCKET_HYDRO)
 
 ! end Add bucket section
 case(TAM_HYDRO) !mmm tam hydro case (currently uses total precip, including snow)
+	!print *,'Check 1',js
 	call tam_hydrology_driver(surf_liq,run_res,liq_table,height,runoff,infiltration,gle,run_out,discharge,recharge, &
 						subflow,precip,flux_q,porosity,rad_lat,rad_lon,current,previous,future,delta_t,delta_t,do_gle,      &
 						do_liq_table, evap_thresh) !mmm this took two separate delta_t values in original, couldn't figure out how they were different

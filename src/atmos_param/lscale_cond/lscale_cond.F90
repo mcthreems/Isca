@@ -77,7 +77,7 @@ contains
 !#######################################################################
 
    subroutine lscale_cond (tin, qin, pfull, phalf, coldT, &
-                           rain, snow, tdel, qdel, mask, conv)
+                           rain, snow, virga, tdel, qdel, mask, conv) !mmm virga variable
 
 !-----------------------------------------------------------------------
 !
@@ -102,14 +102,14 @@ contains
 !           tdel     temperature tendency at full model levels
 !           qdel     specific humidity tendency (of water vapor) at
 !                      full model levels
-!
+!           virga    virga output (kg/m2), added by mmm
 !-----------------------------------------------------------------------
 !--------------------- interface arguments -----------------------------
 
    real   , intent(in) , dimension(:,:,:) :: tin, qin, pfull, phalf
    logical   , intent(in) , dimension(:,:):: coldT
    real   , intent(out), dimension(:,:)   :: rain,snow
-   real   , intent(out), dimension(:,:,:) :: tdel, qdel
+   real   , intent(out), dimension(:,:,:) :: tdel, qdel, virga !mmm
    real   , intent(in) , dimension(:,:,:), optional :: mask
    logical, intent(in) , dimension(:,:,:), optional :: conv
 !-----------------------------------------------------------------------
@@ -190,6 +190,7 @@ integer  k, kx
       precip(:,:)=0.0
    do k=1,kx
       precip(:,:)=precip(:,:)-pmass(:,:,k)*qdel(:,:,k)
+      virga(:,:,k) = pmass(:,:,k)*qdel(:,:,k) !mmm
    enddo
       precip(:,:)=max(precip(:,:),0.0)
 

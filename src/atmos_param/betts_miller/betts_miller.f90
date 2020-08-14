@@ -176,7 +176,7 @@ integer  i, j, k, ix, jx, kx, klzb, ktop, klzb2
       kx=size(tin,3)
       avgbl = .false.
       small = 1.e-10
-
+      capeflag1 = 0.0 !mmm giving this a value since it seems to be causing an issue, but is unused
 ! calculate r
        rin = qin/(1.0 - qin)
        do i=1,ix

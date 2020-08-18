@@ -232,6 +232,7 @@ class CodeBase(Logger):
 
         compile_flags.extend(self.compile_flags)
         compile_flags_str = ' '.join(compile_flags)
+        print(compile_flags_str) #mmm
 
         # get path_names from the directory
         if not self.path_names:

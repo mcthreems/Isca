@@ -59,7 +59,6 @@ use tam_surface_mod,           only: tam_surface_init, tam_surface_end, tam_surf
 use tam_surface_flux_mod,      only: tam_surf_flux_2d   
 use tam_hydrology_mod,         only: tam_hydrology_init,tam_hydrology_end,tam_hydrology_driver
 
-
 #ifdef RRTM_NO_COMPILE
     ! RRTM_NO_COMPILE not included
 #else
@@ -763,47 +762,33 @@ case(TAM_HYDRO)
  
 
   id_run = register_diag_field (mod_name, 'run', axes(1:2), Time, &
-                   'Surface runoff into reservoir', 'kg/m2/s',      &
-                   missing_value=missing_value     )
+                   'Surface runoff into reservoir', 'kg/m2/s')
   id_sub = register_diag_field (mod_name, 'sub', axes(1:2), Time, &
-                   'Subsurface flow', 'kg/m2/s',      &
-                   missing_value=missing_value     )
+                   'Subsurface flow', 'kg/m2/s')
   id_dtd = register_diag_field(mod_name, 'dtd', axes(1:2), Time, &
-                   'Topography used for runoff', 'm', &
-                   missing_value=missing_value    )
+                   'Topography used for runoff', 'm')
   id_infil = register_diag_field (mod_name, 'infil', axes(1:2), Time, &
-                   'Infiltration', 'kg/m2/s',      &
-                   missing_value=missing_value     ) 
+                   'Infiltration', 'kg/m2/s') 
   id_gle = register_diag_field (mod_name, 'gle', axes(1:2), Time, &
-                   'Groundliquid evap from table', 'kg/m2/s',      &
-                   missing_value=missing_value     ) 
+                   'Groundliquid evap from table', 'kg/m2/s') 
   id_res = register_diag_field (mod_name, 'res', axes(1:2), Time, &
-                   'Runoff reservoir', 'm',      &
-                   missing_value=missing_value     )
+                   'Runoff reservoir', 'm')
   id_dis = register_diag_field (mod_name, 'dis', axes(1:2), Time, &
-                   'Discharge', 'kg/m2/s',      &
-                  missing_value=missing_value     )
+                   'Discharge', 'kg/m2/s')
   id_rech = register_diag_field (mod_name, 'recharge', axes(1:2), Time, &
-                   'Recharge of surface from table', 'kg/m2/s',      &
-                  missing_value=missing_value     )
+                   'Recharge of surface from table', 'kg/m2/s')
   id_table = register_diag_field (mod_name, 'table', axes(1:2), Time, &
-                   'Liquid table', 'm',      &
-                   missing_value=missing_value     )
+                   'Liquid table', 'm')
   id_height = register_diag_field (mod_name, 'height', axes(1:2), Time, &
-                   'Height', 'm',      &
-                   missing_value=missing_value     )
+                   'Height', 'm')
   id_sens = register_diag_field ( mod_name, 'sens', axes(1:2), Time, &
-                  'Sensible heat flux', 'W/m2',       &
-                   missing_value=missing_value     )
+                  'Sensible heat flux', 'W/m2')
   id_evap = register_diag_field ( mod_name, 'evap', axes(1:2), Time, &
-                  'Surface evaporation', 'kg/m2/s',       &
-                   missing_value=missing_value     )
+                  'Surface evaporation', 'kg/m2/s')
   id_tsfc = register_diag_field ( mod_name, 'tsurf', axes(1:2), Time, &
-                  'Surface temperature', 'K', &
-                  missing_value=missing_value)
+                  'Surface temperature', 'K')
   id_qsfc = register_diag_field ( mod_name, 'qsurf', axes(1:2), Time, &
-                  'Surface liquid', 'm', &
-                  missing_value=missing_value)
+                  'Surface liquid', 'm')
   ! id_totatm = register_diag_field(mod_name,'tot_atm', Time, &
 !                    'Total area-weighted atmospheric methane','kg', &
 !                    missing_value=missing_value     )

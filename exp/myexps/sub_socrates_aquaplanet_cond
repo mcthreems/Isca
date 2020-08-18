@@ -1,0 +1,23 @@
+#!/bin/csh -f
+
+#Runscript to use in Hoffman2 at UCLA
+#SGE-specific settings
+#$ -pe dc* 16
+#$ -N out_socrates_aquaplanet_cond
+#$ -l highp,h_data=2G,h_rt=72:00:00
+#$ -V
+#$ -cwd
+#$ -m abe
+#$ -q mitch_pod.q
+
+#Minimal runscript for atmospheric dynamical cores
+set echo
+#--------------------------------------------------------------------------------------------------------
+# define variables
+set basedir   = ~/hab_proj/Isca/exp/myexps # A base directory with code
+set exp_file  = socrates_aquaplanet_cond.py
+set condadir  = ~/miniconda/bin                         # Conda directory
+##--------------------------------------------------------------------------------------------------------
+
+source $condadir/activate.csh isca_env
+python $basedir/$exp_file

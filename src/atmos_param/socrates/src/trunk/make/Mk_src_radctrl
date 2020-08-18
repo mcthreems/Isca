@@ -1,0 +1,6 @@
+SOURCE_RADCTRL=	cld_generator_mod.f90 \
+		close_cloud_gen.f90 \
+		mcica_order.f90 \
+		open_cloud_gen.f90 \
+		rand_no_mcica.f90 \
+		set_moist_aerosol_properties.f90

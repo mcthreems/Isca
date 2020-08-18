@@ -16,3 +16,8 @@ def func_sub(expname):
  i_exp_new.write(exp_new)
  i_exp_new.close()
 
+ os.system('mv '+expname+'.e* /u/scratch/m/mmckinne/terminal_out/.')
+ os.system('mv '+expname+'.o* /u/scratch/m/mmckinne/terminal_out/.')
+ os.system('mv '+expname+'.pe* /u/scratch/m/mmckinne/terminal_out/.')
+ os.system('mv '+expname+'.po* /u/scratch/m/mmckinne/terminal_out/.')
+

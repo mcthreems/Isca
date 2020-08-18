@@ -39,9 +39,9 @@ tcmax = 500.                            # Max temperature in runs (degC)
 tcmin = -250.                           # Min temperature (-273 is absolute 0)
 wmax = 500.                             # max valid wind speed, m/s
 valb = False                            # variable albedo flag
-bucket_depth = 1.0                      # Bucket depth, in meters
-es0 = 1.0                               # es0 as a factor of current Earth
-omega_scale = 1.0                       # Scaling of rotation rate relative to Earth's (rotation in days)
+bucket_depth = 40                      # Bucket depth, in meters
+es0 = 1.2                               # es0 as a factor of current Earth
+omega_scale = 1                       # Scaling of rotation rate relative to Earth's (rotation in days)
 omega = 7.2921150e-5 / omega_scale 
 
 dt_day = 86400.                         # Time interval of day, in sec

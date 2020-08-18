@@ -12,7 +12,7 @@
 set echo
 #--------------------------------------------------------------------------------------------------------
 # define variables
-set basedir   = ~/hab_proj/Isca/exp/experiments/my_exps # A base directory with code
+set basedir   = ~/hab_proj/Isca/exp/myexps # A base directory with code
 set exp_file  = test_exp.py
 set condadir  = ~/miniconda/bin                         # Conda directory
 ##--------------------------------------------------------------------------------------------------------

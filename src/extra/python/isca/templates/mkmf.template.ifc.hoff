@@ -1,0 +1,23 @@
+# template for the Intel fortran compiler version 8
+# typical use with mkmf
+# mkmf -t template.ifc -c"-Duse_libMPI -Duse_netCDF" path_names /usr/local/include
+CPPFLAGS = -I/usr/local/include
+NETCDF_LIBS = `nc-config --libs`
+# FFLAGS = -stack_temps -safe_cray_ptr -ftz -i_dynamic -assume byterecl -O2 -i4 -r8 -w95 -I/u/home8/ESS/mitch/mitch/local/include
+#FFLAGS = -stack_temps -safe_cray_ptr -ftz -i_dynamic -assume byterecl -traceback -i4 -r8 -w95 -I/u/home8/ESS/mitch/mitch/local/include -nowarn 
+FFLAGS = $(CPPFLAGS) -fpp -shared-intel -g -O2 -diag-disable 6843 -stack_temps -safe_cray_ptr -ftz -assume byterecl -traceback -i4 -r8 -I${NETCDF_INC} -nowarn -mcmodel large #8/15/19 -i_dynamic
+#OMPI_CPPFLAGS = -check -traceback -I/usr/include -I/usr/local/include -I/usr/local/openmpi/include -I/u/home8/ESS/mitch/mitch/local/include
+#OMPI_F90PPFLAGS = -check -traceback -I/usr/include -I/usr/local/include -I/usr/local/openmpi/include -I/u/home8/ESS/mitch/mitch/local/include
+OMPI_CPPFLAGS = -check -traceback -I${NETCDF_INC} -I${MPI_INC}
+OMPI_F90PPFLAGS = -check -traceback -I${NETCDF_INC} -I{$MPI_INC}
+OMPI_LDFLAGS = -L${NETCDF_LIB} -lnetcdff -L${MPI_LIB}
+# LDFLAGS = -L/u/home8/ESS/mitch/mitch/local/lib -lnetcdf
+LDFLAGS = -L${NETCDF_LIB} -lnetcdff -lnetcdf -lmpi -shared-intel -traceback -nowarn #changed lmpii to lmpi
+OMPI_CC=mpiicc
+OMPI_CXX=mpiicpc
+OMPI_F77=mpiifort
+OMPI_FC=mpiifort
+CC = mpiicc
+FC = $(F90) #referenced from env file
+LD = $(F90) $(NETCDF_LIBS) #referenced from env file and above
+CFLAGS = -D__IFC

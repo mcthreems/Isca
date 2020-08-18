@@ -1,0 +1,3 @@
+URL: https://code.metoffice.gov.uk/svn/socrates/main/trunk
+Last Changed Rev: 735
+Last Changed Date: 2019-06-06 14:32:15 +0100 (Thu, 06 Jun 2019)

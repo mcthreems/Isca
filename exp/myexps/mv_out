@@ -1,0 +1,4 @@
+mv *.e* $SCRATCH/terminal_out
+mv *.o* $SCRATCH/terminal_out
+mv *.pe* $SCRATCH/terminal_out
+mv *.po* $SCRATCH/terminal_out

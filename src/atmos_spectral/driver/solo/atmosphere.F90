@@ -54,6 +54,8 @@ use       tracer_manager_mod, only: get_number_tracers
 
 use idealized_moist_phys_mod, only: idealized_moist_phys_init , idealized_moist_phys , idealized_moist_phys_end
 
+use        diag_manager_mod, only: register_diag_field, send_data !mmm for sphum checks
+
 implicit none
 private
 !=================================================================================================================================
@@ -104,6 +106,11 @@ logical :: module_is_initialized =.false.
 integer         :: dt_integer
 real            :: dt_real
 type(time_type) :: Time_step
+
+!mmm Sphum check outputs
+logical :: used
+integer, dimension(4) :: axes
+integer :: id_sphum2_current, id_sphum2_future, id_sphum3_current, id_sphum3_future, id_sphum4_current, id_sphum4_future
 
 !=================================================================================================================================
 contains
@@ -178,6 +185,21 @@ dt_psg = 0.; dt_ug  = 0.; dt_vg  = 0.; dt_tg  = 0.; dt_tracers = 0.
 
 allocate (surf_geopotential(is:ie, js:je))
 call get_surf_geopotential(surf_geopotential)
+
+!mmm Sphum check outputs
+axes = get_axis_id()
+id_sphum2_current = register_diag_field ( mod_name, 'sphum2_current', axes(1:3), Time, &
+                  'Current Specific Humidity Check 2', 'kg/kg')
+id_sphum2_future = register_diag_field ( mod_name, 'sphum2_future', axes(1:3), Time, &
+                  'Future Specific Humidity Check 2', 'kg/kg')
+id_sphum3_current = register_diag_field ( mod_name, 'sphum3_current', axes(1:3), Time, &
+                  'Current Specific Humidity Check 3', 'kg/kg')
+id_sphum3_future = register_diag_field ( mod_name, 'sphum3_future', axes(1:3), Time, &
+                  'Future Specific Humidity Check 3', 'kg/kg')
+id_sphum4_current = register_diag_field ( mod_name, 'sphum4_current', axes(1:3), Time, &
+                  'Current Specific Humidity Check 4', 'kg/kg')
+id_sphum4_future = register_diag_field ( mod_name, 'sphum4_future', axes(1:3), Time, &
+                  'Future Specific Humidity Check 4', 'kg/kg')
 
 !--------------------------------------------------------------------------------------------------------------------------------
 file = 'INPUT/atmosphere.res.nc'
@@ -297,6 +319,9 @@ else
                  dt_tg(:,:,:         ),   dt_tracers(:,:,:,:), z_full(:,:,:,current))
 endif
 
+if(id_sphum2_current     > 0) used = send_data(id_sphum2_current, grid_tracers(:,:,:,1,1), Time) !mmm
+if(id_sphum2_future      > 0) used = send_data(id_sphum2_future, grid_tracers(:,:,:,2,1), Time) !mmm
+
 if(previous == current) then
   future = num_time_levels + 1 - current
 else
@@ -308,6 +333,9 @@ call spectral_dynamics(Time, psg(:,:,future), ug(:,:,:,future), vg(:,:,:,future)
                        dt_psg, dt_ug, dt_vg, dt_tg, dt_tracers, wg_full, &
                        p_full(:,:,:,current), p_half(:,:,:,current), z_full(:,:,:,current))
 
+if(id_sphum3_current     > 0) used = send_data(id_sphum3_current, grid_tracers(:,:,:,1,1), Time) !mmm
+if(id_sphum3_future      > 0) used = send_data(id_sphum3_future, grid_tracers(:,:,:,2,1), Time) !mmm
+
 if(dry_model) then
   call compute_pressures_and_heights(tg(:,:,:,future), psg(:,:,future), surf_geopotential, &
        z_full(:,:,:,future), z_half(:,:,:,future), p_full(:,:,:,future), p_half(:,:,:,future))
@@ -316,6 +344,9 @@ else
        z_full(:,:,:,future), z_half(:,:,:,future), p_full(:,:,:,future), p_half(:,:,:,future), &
                                      grid_tracers(:,:,:,future,nhum))
 endif
+
+if(id_sphum4_current     > 0) used = send_data(id_sphum4_current, grid_tracers(:,:,:,1,1), Time) !mmm
+if(id_sphum4_future      > 0) used = send_data(id_sphum4_future, grid_tracers(:,:,:,2,1), Time) !mmm
 
 call spectral_diagnostics(Time_next, psg(:,:,future), ug(:,:,:,future), vg(:,:,:,future), &
                           tg(:,:,:,future), wg_full, grid_tracers(:,:,:,:,:), future)

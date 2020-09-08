@@ -333,7 +333,9 @@ integer ::           &
      id_u_10m, 	     & !mp586 for 10m winds and 2m temp
      id_v_10m,       & !mp586 for 10m winds and 2m temp
      id_q_2m,        & ! Add 2m specific humidity
-     id_rh_2m          ! Add 2m relative humidity
+     id_rh_2m,       &  ! Add 2m relative humidity
+     id_sphum1_current, & !mmm sphum checking
+     id_sphum1_future
      
 
 !mmm tam hydro variables
@@ -756,6 +758,11 @@ case(BUCKET_HYDRO)
        axes(1:2), Time, 'Tendency of bucket depth induced by Condensation', 'm/s')
   id_bucket_depth_lh = register_diag_field(mod_name, 'bucket_depth_lh',      &         ! RG Add bucket
        axes(1:2), Time, 'Tendency of bucket depth induced by LH', 'm/s')
+  !mmm sphum checking
+  id_sphum1_current = register_diag_field(mod_name, 'sphum1_current',      &
+       axes(1:3), Time, 'Sphum Checking for Buckets Current', 'kg/kg')
+  id_sphum1_future = register_diag_field(mod_name, 'sphum1_future',      &
+       axes(1:3), Time, 'Sphum Checking for Buckets Future', 'kg/kg')
 
 case(TAM_HYDRO)
 !mmm TAM Hydrology:
@@ -1688,6 +1695,9 @@ case(BUCKET_HYDRO)
 	if(id_bucket_depth_conv > 0) used = send_data(id_bucket_depth_conv, depth_change_conv(:,:), Time)
 	if(id_bucket_depth_cond > 0) used = send_data(id_bucket_depth_cond, depth_change_cond(:,:), Time)
 	if(id_bucket_depth_lh > 0) used = send_data(id_bucket_depth_lh, depth_change_lh(:,:), Time)
+	!mmm checking sphum
+	if(id_sphum1_current > 0) used = send_data(id_sphum1_current, grid_tracers(:,:,:,current,nsphum), Time)
+	if(id_sphum1_future > 0) used = send_data(id_sphum1_future, grid_tracers(:,:,:,future,nsphum), Time)
 
 ! end Add bucket section
 case(TAM_HYDRO) !mmm tam hydro case (currently uses total precip, including snow)

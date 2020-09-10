@@ -308,7 +308,9 @@ integer ::           &
      id_mean_dt_bucket, id_mean_bucket_previous, id_mean_bucket_current, id_mean_bucket_future, id_mean_bucket_previous_post_filter, &
      id_mean_bucket_current_post_filter, id_mean_bucket_future_post_filter, id_mean_bucket_future_post_filter_2, &
      id_mean_bucket_future_post_filter_3, id_dt_bucket_actual, &
-     id_atm_water_change_cond
+     id_atm_water_change_cond, &
+     id_sphum1_current, & !mmm sphum checking
+     id_sphum1_future
 
 integer, allocatable, dimension(:,:) :: convflag ! indicates which qe convection subroutines are used
 real,    allocatable, dimension(:,:) :: rad_lat, rad_lon
@@ -722,6 +724,12 @@ if(bucket) then
   id_bucket_diffusion = register_diag_field(mod_name, 'bucket_diffusion',  &  
        axes(1:2), Time, 'Diffusion rate of bucket','m/s')       
 
+  !mmm sphum checking
+  id_sphum1_current = register_diag_field(mod_name, 'sphum1_current',      &
+       axes(1:3), Time, 'Sphum Checking for Buckets Current', 'kg/kg')
+  id_sphum1_future = register_diag_field(mod_name, 'sphum1_future',      &
+       axes(1:3), Time, 'Sphum Checking for Buckets Future', 'kg/kg')
+       
   id_mean_dt_bucket = register_diag_field(mod_name, 'mean_dt_bucket', Time, 'Diffusion rate of bucket','m/s')
   id_mean_bucket_previous = register_diag_field(mod_name, 'mean_bucket_previous', Time, 'Diffusion rate of bucket','m/s')
   id_mean_bucket_current = register_diag_field(mod_name, 'mean_bucket_current', Time, 'Diffusion rate of bucket','m/s')
@@ -1499,6 +1507,10 @@ if(bucket) then
    if(id_mean_bucket_future_post_filter_2 > 0) used = send_data(id_mean_bucket_future_post_filter_2, mean_bucket_future_post_filter_2, Time)
    if(id_mean_bucket_future_post_filter_3 > 0) used = send_data(id_mean_bucket_future_post_filter_3, mean_bucket_future_post_filter_3, Time)
    if(id_dt_bucket_actual > 0) used = send_data(id_dt_bucket_actual, dt_bucket_actual, Time)
+   
+   !mmm checking sphum
+   if(id_sphum1_current > 0) used = send_data(id_sphum1_current, grid_tracers(:,:,:,current,nsphum), Time)
+   if(id_sphum1_future > 0) used = send_data(id_sphum1_future, grid_tracers(:,:,:,future,nsphum), Time)
 
 
 endif

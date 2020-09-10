@@ -71,6 +71,16 @@ diag.add_field('atmosphere','mean_bucket_future_post_filter_2', time_avg=True)
 diag.add_field('atmosphere','mean_bucket_future_post_filter_3', time_avg=True)
 diag.add_field('atmosphere','dt_bucket_actual', time_avg=True)
 
+#mmm add sphum outputs
+diag.add_field('atmosphere', 'sphum1_current', time_avg=True)
+diag.add_field('atmosphere', 'sphum1_future', time_avg=True)
+diag.add_field('atmosphere', 'sphum2_current', time_avg=True)
+diag.add_field('atmosphere', 'sphum2_future', time_avg=True)
+diag.add_field('atmosphere', 'sphum3_current', time_avg=True)
+diag.add_field('atmosphere', 'sphum3_future', time_avg=True)
+diag.add_field('atmosphere', 'sphum4_current', time_avg=True)
+diag.add_field('atmosphere', 'sphum4_future', time_avg=True)
+
 #radiative tendencies
 # diag.add_field('socrates', 'soc_tdt_lw', time_avg=True)
 # diag.add_field('socrates', 'soc_tdt_sw', time_avg=True)
@@ -233,6 +243,6 @@ if __name__=="__main__":
         cb.compile()
         #Set up the experiment object, with the first argument being the experiment name.
         #This will be the name of the folder that the data will appear in.
-        exp.run(1, use_restart=False, num_cores=NCORES, overwrite_data=False)
-        for i in range(2,171):
-            exp.run(i, num_cores=NCORES)
+        exp.run(1, use_restart=False, num_cores=NCORES, overwrite_data=True)
+        for i in range(2,61):
+            exp.run(i, num_cores=NCORES,overwrite_data=True)

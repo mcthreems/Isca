@@ -23,7 +23,10 @@ use topog_regularization_mod,   only: compute_lambda,regularize
 use topography_mod,             only: get_topog_mean
 use spherical_fourier_mod,      only: get_wts_lat,compute_gradient_cos
 use horiz_interp_mod,           only: horiz_interp
-                                      
+use diag_manager_mod,           only: register_diag_field, send_data !mmm
+use time_manager_mod,           only: time_type                         
+use spectral_dynamics_mod,      only: get_axis_id
+           
 implicit none
 private
 
@@ -75,14 +78,20 @@ real, dimension(:,:), allocatable, save  ::  dtd,lat_halo
   logical :: do_leapfrog      = .false.    !THIS IS UNTESTED, would recommend to keep false 
   real     :: robert_surf_liq     = 0.04
   real     :: RAW_surf_liq        = 0.53
+  real    :: init_surf_height = 1.0     !mmm initial surface height above impermeable basin, in meters
+  real    :: water_lat_limit  = 0.0     !mmm latitude limit below which surface water is initialized as 0
 
+! Output for Debugging !mmm
+  integer :: id_totrain, id_totevap, id_qsfc1, id_qsfc2
+  logical :: used
+  integer, dimension(4) :: axes
 
   namelist /hydrology_nml/ input_speed,linear_catch,run_speed,infil_first,   &
                            basin_length,hyd_cond,infil_rate,  &
                            do_diff,do_darcy,do_flat_topo, &
                            topog_file,do_topo_runoff,do_global_infil,infil_thresh, &
                            init_lakes,init_gauss,do_leapfrog, &
-                           robert_surf_liq,RAW_surf_liq               
+                           robert_surf_liq,RAW_surf_liq,init_surf_height,water_lat_limit               
                                
   
 !-----------------------------------------------------------------------
@@ -95,11 +104,11 @@ contains
 
 !-----------------------------------------------------------------------
 
-subroutine tam_hydrology_init(zsurf,topo_out,liq_begin,table_begin,height_begin,init_surf,init_table,porosity,lat,lon)
+subroutine tam_hydrology_init(Time,zsurf,topo_out,liq_begin,table_begin,height_begin,init_surf,init_table,porosity,lat,lon)
 !-----------------------------------------------------------------------
 ! Initialize surface liquids based on low topography (called in tam_physics)
 !-----------------------------------------------------------------------
-
+  type(time_type), intent(in) :: Time !mmm
   real, intent(in),    dimension(:,:)   :: zsurf,lat,lon
   real, intent(inout),  dimension(:,:)  :: topo_out,liq_begin,table_begin,height_begin
   real, intent(in)   :: init_surf,init_table,porosity
@@ -119,6 +128,20 @@ subroutine tam_hydrology_init(zsurf,topo_out,liq_begin,table_begin,height_begin,
   integer :: layout(2)
  
   integer                 :: unit, io, ierr
+  real    :: mindepth   !mmm making this a variable to print it
+
+
+!mmm Define outputs for debugging
+axes = get_axis_id()
+id_totrain = register_diag_field ( mod_name, 'totrain', axes(1:2), Time, &
+                  'Precipitation Contribution to Surface Liquid', 'kg/m2')
+id_totevap = register_diag_field ( mod_name, 'totevap', axes(1:2), Time, &
+                  'Evaporation Contribution to Surface Liquid', 'kg/m2')
+id_qsfc1 = register_diag_field ( mod_name, 'qsfc1', axes(1:2), Time, &
+                  'Surface Liquid Prior to P&E Contributions', 'kg/m2')
+id_qsfc2 = register_diag_field ( mod_name, 'qsfc2', axes(1:2), Time, &
+                  'Surface Liquid After P&E Contributions', 'kg/m2')
+
 !-----------------------------------------------------------------------
 ! Write namelist variables
 !-----------------------------------------------------------------------
@@ -144,7 +167,7 @@ subroutine tam_hydrology_init(zsurf,topo_out,liq_begin,table_begin,height_begin,
 	 if(file_exist('INPUT/'//trim(topog_file))) then
 	   call mpp_get_global_domain(grid_domain, xsize=global_num_lon, ysize=global_num_lat) 
 	   call field_size('INPUT/'//trim(topog_file), 'zsurf', siz)
-	   if ( siz(1) == global_num_lon .or. siz(2) == global_num_lat ) then
+           if ( siz(1) == global_num_lon .or. siz(2) == global_num_lat ) then
 		 call read_data('INPUT/'//trim(topog_file), 'zsurf', surf_height, grid_domain)
 	   else
 		 call error_mesg ('tam_hydrology_init', &
@@ -175,7 +198,7 @@ else
 ! 	   if (.not.topo_file_exists) then 
 ! 		 call error_mesg('tam_hydrology_init','topography data file does not exist', FATAL)
 ! 	   endif
-	   surf_height = 1.0					!mmm just setting a flat topography with all points at height 1
+	   surf_height = init_surf_height			!mmm just setting a flat topography with all points at init_surf_height
 	   surf_geopotential = grav*surf_height
 
 	!    Spectrally truncate the flat topography 
@@ -253,8 +276,6 @@ end if
     call error_mesg('tam_hydrology','Default surface and subsurface initialization', NOTE)
      do j=1,size(lat,2)
       do i=1,size(lon,1)
-        !if((j == 16 .or. j==17) .and. (i == 32)) then 
-         !   print *,'making two cells of different heights' 
             table_begin(i,j) = (init_table)*liq_dens*porosity
             !table_begin(i,j) = (surf_height(i,j))*liq_dens*porosity
             height_begin(i,j) = table_begin(i,j)/liq_dens/porosity
@@ -263,9 +284,10 @@ end if
              liq_begin(i,j) = (height_begin(i,j) - surf_height(i,j))*liq_dens   
             else
              liq_begin(i,j) = init_surf*liq_dens
-            end if 
-            liq_begin(i,j) = init_surf*liq_dens   
-         !end if
+            end if
+            !liq_begin(i,j) = init_surf*liq_dens !mmm this line seems to undo
+            !the above if statement, so commenting it out for now
+            if (abs(lat(i,j)*180./pi) .le. water_lat_limit) liq_begin(i,j) = 0.1 !mmm making it so you can specify a dry region around the equator
       enddo
     enddo
 
@@ -290,10 +312,8 @@ end if
   layout = (/1,npes/)
   call mpp_define_domains( (/1,nx,1,ny/), layout, topo_domain, yhalo=1)
 
-  !mmm call mpp_get_data_domain( topo_domain, isd, ied, jsd, jed) !isd = is = 0, ied = ie = 64; jsd = js-1, jed = je+1
+  call mpp_get_data_domain( topo_domain, isd, ied, jsd, jed) !isd = is = 0, ied = ie = 64; jsd = js-1, jed = je+1
   call mpp_get_compute_domain( topo_domain, is, ie, js, je )
-  jsd = js - 1 !mmm changing this to see if it prevents the segfaults
-  jed = je + 1
   
   allocate( dtd(is:ie,jsd:jed) )  !dtd = Data Topography Domain 
   allocate( lat_halo(is:ie,jsd:jed)) 
@@ -304,14 +324,20 @@ end if
       lat_halo(i,j) = lat(i-is+1,j-js+1)
     end do
   end do
-
+ 
   !Fill in halo points
   call mpp_update_domains( dtd, topo_domain)       !now dtd(:jsd) and dtd(:,jed) are filled in with appropriate values
   call mpp_update_domains( lat_halo, topo_domain)
   
-  !if (js .eq. 1) then 
-    print *,'global min (dtd): ',mpp_global_min(grid_domain,dtd(:,js:je))
-  !endif 
+  mindepth = mpp_global_min(grid_domain,dtd(:,js:je))
+
+  if (js .eq. 1) then 
+     !print *,'Check js: ',js !mmm
+     !print *,'Check je: ',je !mmm
+     !print *,'Check jsd: ',jsd !mmm
+     !print *,'Check jed: ',jed !mmm
+     print *,'global min (dtd): ',mindepth
+  endif 
 
   if ((linear_catch) .and. (input_speed)) &
       call error_mesg('hydrology', &
@@ -344,10 +370,11 @@ subroutine tam_hydrology_end
 end subroutine tam_hydrology_end
 
 
-subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infiltration,gwe,run_out,dis_out,recharge,&
+subroutine tam_hydrology_driver(Time,surf_liq,run_res,meth_table,height,runoff,infiltration,gwe,run_out,dis_out,recharge,&
                             subflow,tot_rain,evap,porosity,lat,lon,current,previous,future,delta_t,dt,do_gwe,   &
                             do_methane_table,evap_thresh)
 
+  type(time_type), intent(in) :: Time !mmm
   real, intent(inout),  dimension(:,:,:)  :: surf_liq,run_res,meth_table,height
   real, intent(inout),  dimension(:,:  )  :: runoff,infiltration,gwe,run_out,dis_out,recharge,subflow
   real, intent(in),     dimension(:,:  )  :: tot_rain,evap,lat,lon
@@ -361,7 +388,7 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
   real, dimension(size(surf_liq,1),size(surf_liq,2))     :: filt,surf_liq_dt,meth_table_dt,height_dt,diffused, &
                                                             diag_height,sat_flow,resflow,discharge,removal
   integer                                 :: i,j
-  
+  real, dimension(size(tot_rain,1),size(tot_rain,2))     :: tot_rain_corr !mmm
 
   if(previous .eq. current) then
     future = size(surf_liq,3) + 1 - current
@@ -376,6 +403,20 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
 !  Begin by adding precip and evap, adjusting for groundwater evap
 !----------------------------------------------------------------------------
 
+  !if (js == 1) print *,'Check BD 1:',surf_liq(39,14,current)
+  if (id_qsfc1 > 0) used = send_data(id_qsfc1,surf_liq(:,:,current),Time)
+
+  !mmm temporary correction to make negative precip values 0
+  do i=1,size(lon,1)
+   do j=1,size(lat,2)
+    if (tot_rain(i,j) .lt. 0.0) then
+     tot_rain_corr(i,j) = 0.0
+    else
+     tot_rain_corr(i,j) = tot_rain(i,j)
+    endif
+   end do
+  end do
+
   if (do_gwe .and. do_methane_table) then
 
      where (evap*delta_t .ge. surf_liq(:,:,current))
@@ -386,18 +427,35 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
        surf_liq(:,:,current) = surf_liq(:,:,current) - evap*delta_t
      endwhere
 
-     surf_liq(:,:,current) = surf_liq(:,:,current) + tot_rain*delta_t/dt
+     surf_liq(:,:,current) = surf_liq(:,:,current) + tot_rain_corr*delta_t !mmm removed the /dt part because it seemed to assume the wrong units of tot_rain
 
   else
 	
     if (do_leapfrog) then
-       call perform_leap(surf_liq,tot_rain*delta_t/dt - evap*delta_t,previous,current,future)
+       call perform_leap(surf_liq,tot_rain_corr*delta_t - evap*delta_t,previous,current,future) !mmm same as previous comment
     else
-       surf_liq(:,:,current) = surf_liq(:,:,current) + tot_rain*delta_t/dt - evap*delta_t
+       !mmm checking if evap is too large
+       do i=1,size(lon,1)
+        do j=1,size(lat,2)
+         if (evap(i,j)*delta_t .gt. 1.001*(surf_liq(i,j,current) + tot_rain_corr(i,j)*delta_t)) then
+          print *,'Overlarge evaporation, input surf_liq: ',surf_liq(i,j,current), i,js+j-1
+          print *,'Overlarge evaporation: ',evap(i,j)*delta_t, i,js+j-1
+          print *,'Overlarge evaporation, input precipitation: ',tot_rain_corr(i,j)*delta_t, i,js+j-1
+         endif
+        end do
+       end do
+       surf_liq(:,:,current) = surf_liq(:,:,current) + tot_rain_corr*delta_t - evap*delta_t !mmm same as previous comment
     end if
 	
   end if
 
+  !if (js == 13 .and. minval(surf_liq(:,:,current)) .lt. 0) print *,'Check Min Depth 1: ',minval(surf_liq(:,:,current))
+
+  if (id_totrain > 0) used = send_data(id_totrain,tot_rain_corr*delta_t,Time)
+  if (id_totevap > 0) used = send_data(id_totevap,evap*delta_t,Time)
+  if (id_qsfc2 > 0) used = send_data(id_qsfc2,surf_liq(:,:,current),Time)
+  !if (js == 1) print *,'Check Flux_Q 2:',evap(39,14)
+  !if (js == 1) print *,'Check BD 2:',surf_liq(39,14,current)
 
 !----------------------------------------------------------------------------
 !  Diagnostically determine height based off of whether table is saturated
@@ -417,8 +475,8 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
   
   if (do_topo_runoff) then   
     call topo_runoff(runoff,removal,resflow,infiltration,discharge,surf_liq(:,:,current),run_res(:,:,current),&
-          diag_height,tot_rain*delta_t/dt,evap*delta_t,lon,porosity,dt,do_methane_table)
-    
+          diag_height,tot_rain_corr*delta_t,evap*delta_t,lon,porosity,dt,do_methane_table) !mmm same as previous comment
+    !if (js == 1) print *,'Checking Infil 3:',minval(infiltration),maxval(infiltration) !mmm 
   else if (do_global_infil) then
     where (surf_liq(:,:,current) .gt. infil_thresh)
       infiltration = min(surf_liq(:,:,current)-infil_thresh,infil_rate*dt*liq_dens)
@@ -483,6 +541,9 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
    surf_liq_dt = - removal + discharge - infiltration
   end if
 
+  !if (js == 1) print *,'Checking Discharge:',discharge(39,16) !mmm
+  !if (js == 1) print *,'Checking Removal:',removal(39,16)
+
   dis_out = discharge/dt 
   run_out = removal/dt
   infiltration = infiltration/dt
@@ -497,6 +558,7 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
      surf_liq(:,:,current) = surf_liq(:,:,current) + surf_liq_dt*delta_t/dt
    end if
 
+  !if (js == 1) print *,'Checking QSurf:',surf_liq_dt(39,16)
 
   !DO METHANE TABLE
   if (do_methane_table) then
@@ -545,17 +607,25 @@ subroutine tam_hydrology_driver(surf_liq,run_res,meth_table,height,runoff,infilt
      surf_liq(:,:,current) = surf_liq(:,:,current) + surf_liq_dt*delta_t/dt
    end if
 
+  !if (js == 1) print *,'Checking QSurf 2:',surf_liq_dt(39,16)
+  !if (js == 1) print *,'Checking QSurf 3:',surf_liq(39,16,current)
+
   recharge = sat_flow/dt
   subflow = subflow/dt
 
   height(:,:,current) = diag_height
 
-   do i=1,size(lon,1)
-    do j=1,size(lat,2)
-       if (surf_liq(i,j,current) .lt. 0.0) print *,'negative surf: ',surf_liq(i,j,current), i,js+j-1
-    end do
-   end do
- 
+  !if (js == 13 .and. minval(surf_liq(:,:,current)) .lt. 0) print *,'Check Min Depth 2: ',minval(surf_liq(:,:,current))
+
+  !if (minval(surf_liq(:,:,current)) .lt. 0.0) then
+  ! do i=1,size(lon,1)
+  !  do j=1,size(lat,2)
+  !     if (surf_liq(i,j,current) .lt. 0.0) then
+  !      print *,'negative surf: ',surf_liq(i,j,current), i,js+j-1
+  !     end if
+  !  end do
+  ! end do
+  !end if
 
   if (.not.do_leapfrog) then
    surf_liq(:,:,previous) = surf_liq(:,:,current)
@@ -658,16 +728,17 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
   if (infil_first) then
    do j = 1,py
      do i = 1,px
-  
        if (liquid(i,j) .gt. infil_thresh) then 
-             if ((do_methane_table .and. (height(i,j) .lt. dtd(i+is-1,j+js-1))) .or. (do_global_infil .and. .not.do_methane_table)) then 
+             !if (i == 10 .and. j == 10) print *,'Checking Infil:',height(i,j),dtd(i+is-1,j+js-1)
+             if ((do_methane_table .and. (height(i,j) .lt. dtd(i+is-1,j+js-1))) .or. (do_global_infil .and. .not. do_methane_table)) then 
                 infil(i,j) = min(liquid(i,j) - infil_thresh,infil_rate*dt*liq_dens)
+                !if (i == 10 .and. j == 10) print *,'Checking Infil 1:',min(liquid(i,j) - infil_thresh,infil_rate*dt*liq_dens) !mmm
              end if 
        end if 
      end do
    end do
   end if
-
+  !if (js == 1) print *,'Checking Infil 1:',minval(infil),maxval(infil) !mmm
 
   do j = js,je
     do i = is,ie
@@ -679,8 +750,10 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
 
   call get_wts_lat(wts_lat)
   
+  !print *,'Check 1' 
   call mpp_update_domains( dld, topo_domain)
- 
+  !print *,'Check 2' 
+
  !Cell potential = Topography + Surface liquid
   cp = dld+dtd !in meters
 
@@ -819,6 +892,11 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
 !----------runoff reservoir movement-----
  
   final_res = final_res + dresd
+  !print *,'Check -1',js!(/ js,je /)
+  !print *,'Check 0',je!(/ jsd,jed /)
+  !print *,'Check 1',shape(dresd_s)
+  !print *,'Check 2',shape(topo_domain)
+                
   call mpp_update_domains(dresd_s,topo_domain)
   call mpp_update_domains(dresd_n,topo_domain)
   final_res(:,js) = final_res(:,js) + dresd_n(:,jsd)
@@ -860,7 +938,7 @@ subroutine topo_runoff(runoff, removal, res,infil,dis,liquid,rr,height,rain, eva
           
     end do
   end do 
-
+!if (js == 1) print *,'Checking Infil 2:',minval(infil),maxval(infil) !mmm
 !-----------------------------------------------------------------------
 ! Assign to runoff diag
 !-----------------------------------------------------------------------       
@@ -916,9 +994,10 @@ subroutine gosurfflow(drd,drd_north,drd_south,cp,wts,length,curr_liq,ix,jx,rx,ry
       !tc = 3600.*0.41344*((length)/abs(slope)**0.5)**0.79  !this was old way, probably wrong but nicely slow
       cell_run = 2.*dt*curr_liq/tc
  
-   !Print out rates of interest in spectral.out
-    if (first_hydro_call) print *, 'tc,linear_catch,length,L/S,rain,evap,jx: ',tc,cell_run,length, length/sqrt(abs(slope)),rain,ue,jx
-    if (rain*1000*86400/dt/liq_dens .gt. 100.0) print *, 'intense storm > 100 mm/day, rain (mm/day), runoff,tc : ',rain*1000*86400/dt/liq_dens,cell_run,tc,jx
+   !Print out rates of interest in spectral.out !mmm decided these were printing
+   !out too often to be helpful
+    !if (first_hydro_call) print *, 'tc,linear_catch,length,L/S,rain,evap,jx: ',tc,cell_run,length, length/sqrt(abs(slope)),rain,ue,jx
+    !if (rain*1000*86400/dt/liq_dens .gt. 1000.0) print *, 'intense storm > 1000 mm/day, rain (mm/day), runoff,tc : ',rain*1000*86400/dt/liq_dens,cell_run,tc,jx
 
   else if (input_speed) then
       cell_run = run_speed*dt*liq_dens*abs(slope)
@@ -1044,10 +1123,10 @@ SUBROUTINE do_subsurface_flow(diff,sat_flow,subflow,table,height,liquid,lon,poro
 
   		call get_wts_lat(wts_lat)
              
-                if (js .eq. 1) print *,'Check 1',(/js,je/)
-                if (js .eq. 1) print *,'Check 2',ny
+                !print *,'Check 3',shape(dld)
+                !print *,'Check 4',shape(topo_domain)
 		call mpp_update_domains(dld, topo_domain) !mmm segfaults here when run on multiple cores
-	        print *,'Check 3',js	
+	        !print *,'Check 3',js	
 		cp = dld	!cell potentials, in meters
 		
 		do j = 1,py

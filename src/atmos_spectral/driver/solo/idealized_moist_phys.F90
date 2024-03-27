@@ -54,6 +54,8 @@ use  field_manager_mod, only: MODEL_ATMOS
 
 use rayleigh_bottom_drag_mod, only: rayleigh_bottom_drag_init, compute_rayleigh_bottom_drag
 
+use    global_integral_mod, only: mass_weighted_vertical_integral
+
 ! use tam_physics_mod,         only: tam_physics_init, tam_physics, tam_physics_end
 use tam_surface_mod,           only: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
 use tam_surface_flux_mod,      only: tam_surf_flux_2d   
@@ -144,7 +146,7 @@ real :: devrat
 logical :: do_surf_evap = .true.          !Do evaporation from surface?
 logical :: var_surf_prop = .false.        !Vary surface properties depending on liquid?
 logical :: convective_lakes = .false.     !Do convective lake adjustment?
-real    :: threshold_liq = -1.0   		  !Threshold for counting grid surface as liquid (-1 is a flag for 10*liq_dens)
+real    :: threshold_liq = -1.0   		  !Threshold for counting grid surface as liquid, in kg/m^2 (or mm for water) (-1 is a flag for 10*liq_dens mm depth)
 logical  :: init_lakes     = .false.      !Initialize observed lakes?
 logical  :: even_polar_liq = .false.      !With init_lakes=true, distributed polar liq
 real     :: wetland_latn   = 60.          !Northern wetland boundary
@@ -166,6 +168,9 @@ real :: vis_albedo    = 0.20    !Shortwave surface albedo over dry grid cell
 real :: liq_albedo    = 0.05    !Shortwave albedo over liquid grid cell
 real :: ir_albedo     = 0.0     !Longwave surface albedo
 logical  :: write_restart       = .true.
+logical :: do_lscale_cond = .true.  !option for turning off lscale cond separately
+logical :: do_vert_diff = .true.    !option for turning off vertical diffusion separately
+logical :: do_direct_delta_tr = .false.  !option for directly calculating the delta of sphum from the flux_q, intended to help with water conservation
 !mmm end TAM hydrology options
 
 !s Radiation options
@@ -206,7 +211,8 @@ namelist / idealized_moist_phys_nml / turb, lwet_convection, do_bm, do_ras, roug
                                       threshold_liq, init_lakes, even_polar_liq, wetland_latn, &
                                       wetland_lats, init_wetlands, init_surf_liq, init_liq_table, &
                                       porosity, evap_thresh, do_gle, do_liq_table, sin_z, gle_alpha, &
-                                      depth_scale, negate_eq, vis_albedo, liq_albedo, ir_albedo, mmm_water_cons !mmm
+                                      depth_scale, negate_eq, vis_albedo, liq_albedo, ir_albedo, &
+                                      mmm_water_cons, do_lscale_cond, do_vert_diff, do_direct_delta_tr !mmm
 
 
 integer, parameter :: num_time_levels = 2 !RG Add bucket - number of time levels added to allow timestepping in this module
@@ -259,7 +265,11 @@ real, allocatable, dimension(:,:)   ::                                        &
      u_10m,		   &   !mp586 for 10m winds and 2m temp
      v_10m,		   &   !mp586 for 10m winds and 2m temp
      q_2m,                 &   ! Add 2m specific humidity
-     rh_2m                     ! Add 2m relative humidity
+     rh_2m,                &   ! Add 2m relative humidity
+     beta,                 &   !mmm adding beta output based on param from Fan et al
+     q_max,                &   !mmm adding this to see what q_max is in the model
+     fnq_term,             &   !mmm adding as output to check evap coupling
+     enq_term                  !mmm
 
 real, allocatable, dimension(:,:,:) ::                                        &
      diff_m,               &   ! momentum diffusion coeff.
@@ -334,14 +344,23 @@ integer ::           &
      id_v_10m,       & !mp586 for 10m winds and 2m temp
      id_q_2m,        & ! Add 2m specific humidity
      id_rh_2m,       &  ! Add 2m relative humidity
-     id_sphum1_current, & !mmm sphum checking
-     id_sphum1_future
-     
+     id_sphum_dt1, & !mmm sphum checking
+     id_sphum_dt2, &
+     id_sphum_dt3, &
+     id_sphum_dt4, &
+     id_sphum_dt5, &
+     id_sphum_dt6, &
+     id_sphum_dt7, &
+     id_sphum_dt8, &
+     id_sphum_dt9, &
+     id_sphum_dt10, & !mmm outputs for vertical humidity integrals
+     id_cwv, id_dtend, id_cvtend, id_cdtend
 
 !mmm tam hydro variables
 integer  :: id_sens, id_evap, id_sub, id_infil, id_gle, id_res, id_dtd, &
             id_dis, id_rech, id_table, id_height, id_run, & 
-            id_totatm, id_totsurf, id_totsub, id_sc, id_tsfc, id_qsfc     
+            id_totatm, id_totsurf, id_totsub, id_sc, id_tsfc, id_qsfc, id_beta, id_tam_albedo, id_q_max, id_q_surf, &
+            id_fnq_term, id_enq_term     
 
 integer, allocatable, dimension(:,:) :: convflag ! indicates which qe convection subroutines are used
 real,    allocatable, dimension(:,:) :: rad_lat, rad_lon, albedoi
@@ -566,6 +585,10 @@ allocate(conv_dt_tg  (is:ie, js:je, num_levels))
 allocate(conv_dt_qg  (is:ie, js:je, num_levels))
 allocate(cond_dt_tg  (is:ie, js:je, num_levels))
 allocate(cond_dt_qg  (is:ie, js:je, num_levels))
+allocate(beta    (is:ie, js:je)) !mmm
+allocate(q_max   (is:ie, js:je)) !mmm
+allocate(fnq_term   (is:ie, js:je)) !mmm
+allocate(enq_term   (is:ie, js:je)) !mmm
 
 allocate(coldT        (is:ie, js:je)); coldT = .false.
 allocate(klzbs        (is:ie, js:je))
@@ -707,7 +730,7 @@ if(mixed_layer_bc .AND. r_hydro_scheme .ne. TAM_HYDRO) then
   ! to quickly enter the atmosphere avoiding problems with the convection scheme
   t_surf = t_surf_init + 1.0
 
-  call mixed_layer_init(is, ie, js, je, num_levels, t_surf, bucket_depth, get_axis_id(), Time, albedo, rad_lonb_2d(:,:), rad_latb_2d(:,:), land, bucket) ! t_surf is intent(inout) !s albedo distribution set here.
+  call mixed_layer_init(is, ie, js, je, num_levels, t_surf, bucket_depth, get_axis_id(), Time, albedo, rad_lonb_2d(:,:), rad_latb_2d(:,:), rad_lat(:,:), land, bucket) ! t_surf is intent(inout) !s albedo distribution set here.
 
 elseif(gp_surface) then
   albedo=0.0
@@ -747,6 +770,36 @@ id_flux_u = register_diag_field(mod_name, 'flux_u', &
 id_flux_v = register_diag_field(mod_name, 'flux_v', &
      axes(1:2), Time, 'Meridional momentum flux', 'Pa')
 
+!mmm sphum checking
+  id_sphum_dt1 = register_diag_field(mod_name, 'sphum_dt1',      &
+       axes(1:3), Time, 'Sphum Checking 1', 'kg/kg/s')
+  id_sphum_dt2 = register_diag_field(mod_name, 'sphum_dt2',      &
+       axes(1:3), Time, 'Sphum Checking 2', 'kg/kg/s')
+  id_sphum_dt3 = register_diag_field(mod_name, 'sphum_dt3',      &
+       axes(1:3), Time, 'Sphum Checking 3', 'kg/kg/s')
+  id_sphum_dt4 = register_diag_field(mod_name, 'sphum_dt4',      &
+       axes(1:3), Time, 'Sphum Checking 4', 'kg/kg/s')
+  id_sphum_dt5 = register_diag_field(mod_name, 'sphum_dt5',      &
+       axes(1:3), Time, 'Sphum Checking 5', 'kg/kg/s')
+  id_sphum_dt6 = register_diag_field(mod_name, 'sphum_dt6',      &
+       axes(1:3), Time, 'Sphum Checking 6', 'kg/kg/s')
+  id_sphum_dt7 = register_diag_field(mod_name, 'sphum_dt7',      &
+       axes(1:3), Time, 'Sphum Checking 7', 'kg/kg/s')
+  id_sphum_dt8 = register_diag_field(mod_name, 'sphum_dt8',      &
+       axes(1:3), Time, 'Sphum Checking 8', 'kg/kg/s')
+  id_sphum_dt9 = register_diag_field(mod_name, 'sphum_dt9',      &
+       axes(1:3), Time, 'Sphum Checking 9', 'kg/kg/s')
+  id_sphum_dt10 = register_diag_field(mod_name, 'sphum_dt10',      &
+       axes(1:3), Time, 'Sphum Checking 10', 'kg/kg/s')
+  id_cwv = register_diag_field(mod_name, 'cwv',      &
+       axes(1:2), Time, 'Column Water Vapor', 'kg/m**2')
+  id_dtend = register_diag_field(mod_name, 'dtend',      &
+       axes(1:2), Time, 'Vertically-Integrated Diffusion Tendency', 'kg/m**2/s')
+  id_cvtend = register_diag_field(mod_name, 'cvtend',      &
+       axes(1:2), Time, 'Vertically-Integrated Convection Tendency', 'kg/m**2/s')
+  id_cdtend = register_diag_field(mod_name, 'cdtend',      &
+       axes(1:2), Time, 'Vertically-Integrated Condensation Tendency', 'kg/m**2/s')
+
 select case(r_hydro_scheme)
 
 case(BUCKET_HYDRO)
@@ -758,11 +811,6 @@ case(BUCKET_HYDRO)
        axes(1:2), Time, 'Tendency of bucket depth induced by Condensation', 'm/s')
   id_bucket_depth_lh = register_diag_field(mod_name, 'bucket_depth_lh',      &         ! RG Add bucket
        axes(1:2), Time, 'Tendency of bucket depth induced by LH', 'm/s')
-  !mmm sphum checking
-  id_sphum1_current = register_diag_field(mod_name, 'sphum1_current',      &
-       axes(1:3), Time, 'Sphum Checking for Buckets Current', 'kg/kg')
-  id_sphum1_future = register_diag_field(mod_name, 'sphum1_future',      &
-       axes(1:3), Time, 'Sphum Checking for Buckets Future', 'kg/kg')
 
 case(TAM_HYDRO)
 !mmm TAM Hydrology:
@@ -796,7 +844,19 @@ case(TAM_HYDRO)
                   'Surface temperature', 'K')
   id_qsfc = register_diag_field ( mod_name, 'qsurf', axes(1:2), Time, &
                   'Surface liquid', 'm')
-  ! id_totatm = register_diag_field(mod_name,'tot_atm', Time, &
+  id_beta = register_diag_field ( mod_name, 'beta', axes(1:2), Time, &
+                  'Beta Parameter to Evaporation', 'dimensionless')
+  id_tam_albedo = register_diag_field ( mod_name, 'tam_albedo', axes(1:2), Time, &
+                  'Albedo for the TAM surface mod','dimensionless')
+  id_q_max = register_diag_field ( mod_name, 'qmax', axes(1:2), Time, &
+                  'Calculate "max" surface specific humidity','kg/kg')
+  id_q_surf = register_diag_field ( mod_name, 'sh_surf', axes(1:2), Time, &
+                  'Surface SH used in evaporation calculation','kg/kg')
+  id_fnq_term = register_diag_field ( mod_name, 'fnq_term', axes(1:2), Time, &
+                  'First Term from Evaporation Coupling','kg/kg')
+  id_enq_term = register_diag_field ( mod_name, 'enq_term', axes(1:2), Time, &
+                  'Second Term from Evaporation Coupling','kg/kg')
+!   id_totatm = register_diag_field(mod_name,'tot_atm', Time, &
 !                    'Total area-weighted atmospheric methane','kg', &
 !                    missing_value=missing_value     )
 !   id_totsurf = register_diag_field(mod_name,'tot_surf', Time, &
@@ -898,7 +958,7 @@ select case(r_hydro_scheme)
 
 case(TAM_HYDRO)
        
-	call tam_hydrology_init(z_surf,dtd,surf_liq_begin,liq_table_begin,height_begin, &
+	call tam_hydrology_init(Time,z_surf,dtd,surf_liq_begin,liq_table_begin,height_begin, &
 	                    init_surf_liq,init_liq_table,porosity,rad_lat,rad_lon)
                   
 	if (id_dtd > 0) used = send_data(id_dtd, dtd, Time)
@@ -1030,7 +1090,7 @@ if(turb) then
    id_diff_dt_tg = register_diag_field(mod_name, 'dt_tg_diffusion',        &
         axes(1:3), Time, 'temperature diffusion tendency','T/s')
    id_diff_dt_qg = register_diag_field(mod_name, 'dt_qg_diffusion',        &
-        axes(1:3), Time, 'moisture diffusion tendency','T/s')
+        axes(1:3), Time, 'moisture diffusion tendency','kg/kg/s')
 endif
 
    id_rh = register_diag_field ( mod_name, 'rh', &
@@ -1089,6 +1149,8 @@ if(r_hydro_scheme .eq. TAM_HYDRO) then
 	endif
 endif
 
+if(id_sphum_dt1 > 0) used = send_data(id_sphum_dt1, dt_tracers(:,:,:,nsphum), Time)
+
 select case(r_conv_scheme)
 
 case(SIMPLE_BETTS_CONV)
@@ -1142,6 +1204,18 @@ case(FULL_BETTS_MILLER_CONV)
    rain       = rain/delta_t
    precip     = rain
 
+   !if (minval(precip) .lt. 0.0) then
+    !do i=1,size(rad_lon,1)
+     !do j=1,size(rad_lat,2)
+      !if (precip(i,j) .lt. 0.0) then
+       !print *,'negative conv precip: ',precip(i,j), i,js+j-1
+      !end if
+     !end do
+    !end do
+   !else
+    !print *,'minval conv precip: ',minval(precip), js
+   !end if
+
    if(id_conv_dt_qg > 0) used = send_data(id_conv_dt_qg, conv_dt_qg, Time)
    if(id_conv_dt_tg > 0) used = send_data(id_conv_dt_tg, conv_dt_tg, Time)
    if(id_conv_rain  > 0) used = send_data(id_conv_rain, rain, Time)
@@ -1181,7 +1255,7 @@ case(RAS_CONV)
       dt_ug = dt_ug + dt_ug_conv
       dt_vg = dt_vg + dt_vg_conv
 
-      precip     = precip + rain + snow
+      precip     = rain + snow !mmm removed the precip in the math, since it should just be 0 at this point
 
       !mmm Add bucket to RAS (can potentially just make this 0 to see if it's
       !giving weird values)
@@ -1207,9 +1281,11 @@ end select
 dt_tg = dt_tg + conv_dt_tg
 dt_tracers(:,:,:,nsphum) = dt_tracers(:,:,:,nsphum) + conv_dt_qg
 
+if(id_sphum_dt2 > 0) used = send_data(id_sphum_dt2, dt_tracers(:,:,:,nsphum),Time)
+
 
 ! Perform large scale convection
-if (r_conv_scheme .ne. DRY_CONV) then
+if (r_conv_scheme .ne. DRY_CONV .and. do_lscale_cond) then
   ! Large scale convection is a function of humidity only.  This is
   ! inconsistent with the dry convection scheme, don't run it!
   rain = 0.0; snow = 0.0; virga = 0.0 !mmm
@@ -1232,6 +1308,18 @@ if (r_conv_scheme .ne. DRY_CONV) then
   dt_tg = dt_tg + cond_dt_tg
   dt_tracers(:,:,:,nsphum) = dt_tracers(:,:,:,nsphum) + cond_dt_qg
 
+  !if (minval(precip) .lt. 0.0) then
+   !do i=1,size(rad_lon,1)
+    !do j=1,size(rad_lat,2)
+     !if (precip(i,j) .lt. 0.0) then
+      !print *,'negative cond precip: ',precip(i,j), i,js+j-1
+     !end if
+    !end do
+   !end do
+  !else
+   !print *,'minval cond precip: ',minval(precip), js
+  !end if
+
   if(id_cond_dt_qg > 0) used = send_data(id_cond_dt_qg, cond_dt_qg, Time)
   if(id_cond_dt_tg > 0) used = send_data(id_cond_dt_tg, cond_dt_tg, Time)
   if(id_cond_rain  > 0) used = send_data(id_cond_rain, rain, Time)
@@ -1240,6 +1328,7 @@ if (r_conv_scheme .ne. DRY_CONV) then
 
 endif
 
+if(id_sphum_dt3 > 0) used = send_data(id_sphum_dt3, dt_tracers(:,:,:,nsphum),Time)
 
 ! Begin the radiation calculation by computing downward fluxes.
 ! This part of the calculation does not depend on the surface temperature.
@@ -1292,6 +1381,7 @@ if(.not.gp_surface .AND. r_hydro_scheme .ne. TAM_HYDRO) then !mmm added flag to 
                              rough_moist(:,:),                              &
                                rough_mom(:,:),                              & ! using rough_mom in place of rough_scale -- pjp
                                     gust(:,:),                              &
+                                 rad_lat(:,:),                              & !mmm added lat input
                                   flux_t(:,:),                              & ! is intent(out)
                                   flux_q(:,:),                              & ! is intent(out)
                                   flux_r(:,:),                              & ! is intent(out)
@@ -1407,16 +1497,17 @@ case(TAM_HYDRO)
 	kd = size(p_full,3)
 	ps(:,:) = p_half(:,:,size(p_half,3),previous)
 	zkd(:,:)   = (ps(:,:)-p_full(:,:,kd,previous)) / (grav*(ps(:,:)/( rdgas*tg(:,:,kd,previous))))
-	call tam_surf_flux_2d ( tg(:,:,kd,previous), grid_tracers(:,:,kd,previous,1), &
+	call tam_surf_flux_2d ( tg(:,:,kd,previous), grid_tracers(:,:,kd,previous,nsphum), &
 					  ug(:,:,kd,previous), vg(:,:,kd,previous), &
 					  p_full(:,:,kd,previous), zkd, ps, t_surf, surf_liq(:,:,current),&
 					  rough_mom, rough_heat, rough_moist, gust, flux_t, flux_q, flux_u, &
 					  flux_v, drag_m, drag_t, drag_q, w_atm, ustar, bstar, qstar,  &
 					  dhdt_surf, dedt_surf, dedq_surf,                &
 					  dhdt_atm, dedq_atm, dtaudu_atm, dtaudv_atm,    &
-					  is, js, delta_t, Time, do_gle, evap_thresh)
+					  is, js, delta_t, Time, do_gle, evap_thresh, beta, q_max, q_surf)
 
-
+        !if(js == 1) print *,'Checking Flux_Q:',maxval(flux_q)!mmm
+        !if(js == 1) print *,'Checking T_Surf:',maxval(t_surf)
 	if (.not. do_surf_evap) then
 	flux_q      = 0.0
 	dedt_surf = 0.0
@@ -1441,10 +1532,11 @@ case(TAM_HYDRO)
 	  else
 		 evap_scale(i,j) = 1.0
 	  endif
-
-	  if (first_physics_call) then
-		print *,'rad_lat,depth_below,damp param: ',rad_lat(1,j)*180./pi,depth_below,evap_scale(i,j)
-	  endif
+      
+          !mmm printing far too many times to be useful
+	  !if (first_physics_call) then
+		!print *,'rad_lat,depth_below,evap_scale: ',rad_lat(1,j)*180./pi,depth_below,evap_scale(i,j)
+	  !endif
 
 	 end do
 	end do
@@ -1458,10 +1550,11 @@ case(TAM_HYDRO)
 		evap_scale(i,j) = min(1.0,exp(gle_A * (height(i,j,current) - topo(i,j)))) 
 	  endif
 
-	  if (first_physics_call) then
-		print *,'rad_lat,liq,depth_below,damp param: ',rad_lat(1,j)*180./pi,surf_liq(i,j,current), &
-			  max(0.0,topo(i,j) - height(i,j,current)),evap_scale(i,j)
-	  endif
+          !mmm same as previous comment
+	  !if (first_physics_call) then
+		!print *,'rad_lat,surf_liq,depth_below,evap_scale: ',rad_lat(1,j)*180./pi,surf_liq(i,j,current), &
+			  !max(0.0,topo(i,j) - height(i,j,current)),evap_scale(i,j)
+	  !endif
 
 	 end do
 	end do
@@ -1473,11 +1566,19 @@ case(TAM_HYDRO)
 
 	endif
 
-	if (id_sens > 0) used = send_data ( id_sens, flux_t, Time, is, js )
-	if (id_evap > 0) used = send_data ( id_evap, flux_q, Time, is, js )
-	if (id_flux_u > 0) used = send_data ( id_flux_u, flux_u, Time, is, js )
+        !if (js == 1) print *,'Check Flux_Q 1:',flux_q(39,14)
+	!if (js == 1) print *,'Check dt:',delta_t
+        if (id_sens > 0) used = send_data ( id_sens, flux_t, Time) !mmm , is, js )
+	if (id_evap > 0) used = send_data ( id_evap, flux_q, Time) !mmm , is, js )
+	if (id_flux_u > 0) used = send_data ( id_flux_u, flux_u, Time) !mmm , is, js )
+        if (id_beta > 0) used = send_data ( id_beta, beta, Time) !mmm
+        if (id_q_max > 0) used = send_data ( id_q_max, q_max, Time) !mmm
+        if (id_q_surf > 0) used = send_data ( id_q_surf, q_surf, Time) !mmm
 
 end select
+
+if(id_sphum_dt4 > 0) used = send_data(id_sphum_dt4,dt_tracers(:,:,:,nsphum),Time)
+
 !-----------------------------------------------------------------------
 !mmm End call surface fluxes
 !-----------------------------------------------------------------------
@@ -1501,6 +1602,7 @@ if(do_damping) then
 endif
 
 
+if(id_sphum_dt5 > 0) used = send_data(id_sphum_dt5,dt_tracers(:,:,:,nsphum),Time)
 
 if(turb) then
 
@@ -1525,6 +1627,8 @@ if(turb) then
                             z_pbl(:,:) )
 
       pbltop(is:ie,js:je) = z_pbl(:,:) !s added so that z_pbl can be used subsequently by damping_driver.
+
+if(id_sphum_dt6 > 0) used = send_data(id_sphum_dt6,dt_tracers(:,:,:,nsphum),Time)
 
 !
 !! Don't zero these derivatives as the surface flux depends implicitly
@@ -1553,6 +1657,7 @@ if(turb) then
    non_diff_dt_tg  = dt_tg
    non_diff_dt_qg  = dt_tracers(:,:,:,nsphum)
 
+   if (do_vert_diff) then
    call gcm_vert_diff_down (1, 1,                                          &
                             delta_t,             ug(:,:,:,previous),       &
                             vg(:,:,:,previous),  tg(:,:,:,previous),       &
@@ -1566,6 +1671,10 @@ if(turb) then
                             dt_tg(:,:,:),        dt_tracers(:,:,:,nsphum), &
                             dt_tracers(:,:,:,:),         diss_heat(:,:,:), &
                             Tri_surf)
+   endif
+
+if(id_sphum_dt7 > 0) used = send_data(id_sphum_dt7,dt_tracers(:,:,:,nsphum),Time)
+
 !
 ! update surface temperature
 !
@@ -1587,33 +1696,51 @@ if(turb) then
                             dhdt_atm(:,:),                                 &
                             dedq_atm(:,:),                                 &
                               albedo(:,:),                                 &
-                bucket_depth(:,:,current)) !mmm adding for dynamic heat capacity/albedo (intent in)
+                bucket_depth(:,:,current),rad_lat(:,:)) !mmm adding for dynamic heat capacity/albedo (intent in)
    
    !mmm use TAM calculation for Tri_surf, t_surf, and tgrnd
    else if(r_hydro_scheme .eq. TAM_HYDRO) then
-		call tam_surf_temp (is, js, delta_t, Time, surf_liq(:,:,current), albedoi, &
-					  flux_r, flux_t, flux_q, dhdt_surf, dedt_surf, dedq_surf,   &
+                !if (js == 1) print *,'Checking tam_surf_temp Inputs:',maxval(t_surf)
+                !mmm the input surface rad flux is "net_surf_sw_down+surf_lw_down*(1-albedoi)" to include both the SW and back-radiated LW
+		call tam_surf_temp (is, js, dt_real, Time, surf_liq(:,:,current), albedoi, &
+					  net_surf_sw_down+surf_lw_down*(1-albedoi), flux_t, flux_q, dhdt_surf, dedt_surf, dedq_surf,   &
 					  dhdt_atm, dedq_atm, Tri_surf, var_surf_prop,        &
 					  threshold_liq, liq_dens, convective_lakes,          & 
-					  do_liq_table, height(:,:,current), topo,porosity)
+					  do_liq_table, height(:,:,current), topo,porosity,   &
+                                          ps*(ps-p_half(:,:,size(p_half,3)-1,previous)), do_direct_delta_tr, fnq_term, enq_term)
 		
-		t_surf(:,:) = tam_tgrnd(is:ie,js:je,1)
-		
-		if (id_tsfc > 0) used = send_data (id_tsfc, t_surf, Time, is, js)
+		t_surf(:,:) = tam_tgrnd(:,:,1)
+		!if (js /= 1) print *,'Checking T_Surf:',minval(t_surf) !mmm
+		if (id_tsfc > 0) used = send_data (id_tsfc, t_surf, Time) !mmm , is, js)
+                if (id_fnq_term > 0) used = send_data (id_fnq_term, fnq_term, Time)
+                if (id_enq_term > 0) used = send_data (id_enq_term, enq_term, Time)
    
    endif
-   call gcm_vert_diff_up (1, 1, delta_t, Tri_surf, dt_tg(:,:,:), dt_tracers(:,:,:,nsphum), dt_tracers(:,:,:,:))
+
+   if(id_sphum_dt8 > 0) used = send_data(id_sphum_dt8,dt_tracers(:,:,:,nsphum),Time)
+
+   if (do_vert_diff) call gcm_vert_diff_up (1, 1, delta_t, Tri_surf, dt_tg(:,:,:), dt_tracers(:,:,:,nsphum), dt_tracers(:,:,:,:))
    
+   if(id_sphum_dt9 > 0) used = send_data(id_sphum_dt9,dt_tracers(:,:,:,nsphum),Time)
+
    if(id_diff_dt_ug > 0) used = send_data(id_diff_dt_ug, dt_ug - non_diff_dt_ug, Time)
    if(id_diff_dt_vg > 0) used = send_data(id_diff_dt_vg, dt_vg - non_diff_dt_vg, Time)
    if(id_diff_dt_tg > 0) used = send_data(id_diff_dt_tg, dt_tg - non_diff_dt_tg, Time)
    if(id_diff_dt_qg > 0) used = send_data(id_diff_dt_qg, dt_tracers(:,:,:,nsphum) - non_diff_dt_qg, Time)
+   if(id_tam_albedo > 0) used = send_data(id_tam_albedo, albedo, Time)
 
 endif ! if(turb) then
 
 !s Adding relative humidity calculation so as to allow comparison with Frierson's thesis.
    call rh_calc (p_full(:,:,:,previous),tg_tmp,qg_tmp,RH)
    if(id_rh >0) used = send_data(id_rh, RH*100., Time)
+
+!mmm Adding vertical integrals as outputs
+if(id_cwv > 0) used = send_data(id_cwv, mass_weighted_vertical_integral(grid_tracers(:,:,:,previous,nsphum),p_half(:,:,num_levels+1,previous)), Time)
+if(id_dtend > 0) used = send_data(id_dtend, mass_weighted_vertical_integral(dt_tracers(:,:,:,nsphum) - non_diff_dt_qg,p_half(:,:,num_levels+1,previous)), Time)
+if(id_cvtend > 0) used = send_data(id_cvtend, mass_weighted_vertical_integral(conv_dt_qg,p_half(:,:,num_levels+1,previous)), Time)
+if(id_cdtend > 0) used = send_data(id_cdtend, mass_weighted_vertical_integral(cond_dt_qg,p_half(:,:,num_levels+1,previous)), Time)
+
 !-----------------------------------------------------------------------
 !mmm Do hydrology
 !-----------------------------------------------------------------------
@@ -1695,55 +1822,68 @@ case(BUCKET_HYDRO)
 	if(id_bucket_depth_conv > 0) used = send_data(id_bucket_depth_conv, depth_change_conv(:,:), Time)
 	if(id_bucket_depth_cond > 0) used = send_data(id_bucket_depth_cond, depth_change_cond(:,:), Time)
 	if(id_bucket_depth_lh > 0) used = send_data(id_bucket_depth_lh, depth_change_lh(:,:), Time)
-	!mmm checking sphum
-	if(id_sphum1_current > 0) used = send_data(id_sphum1_current, grid_tracers(:,:,:,current,nsphum), Time)
-	if(id_sphum1_future > 0) used = send_data(id_sphum1_future, grid_tracers(:,:,:,future,nsphum), Time)
 
 ! end Add bucket section
 case(TAM_HYDRO) !mmm tam hydro case (currently uses total precip, including snow)
-	!print *,'Check 1',js
-	call tam_hydrology_driver(surf_liq,run_res,liq_table,height,runoff,infiltration,gle,run_out,discharge,recharge, &
-						subflow,precip,flux_q,porosity,rad_lat,rad_lon,current,previous,future,delta_t,delta_t,do_gle,      &
-						do_liq_table, evap_thresh) !mmm this took two separate delta_t values in original, couldn't figure out how they were different
+	if (minval(precip) .lt. 0.0) then
+         do i=1,size(rad_lon,1)
+          do j=1,size(rad_lat,2)
+           if (precip(i,j) .lt. 0.0) then
+            print *,'negative cond precip: ',precip(i,j), i,js+j-1
+           end if
+          end do
+         end do
+        !else
+         !print *,'minval tamhydro precip: ',minval(precip), js
+        end if
+	call tam_hydrology_driver(Time,surf_liq,run_res,liq_table,height,runoff,infiltration,gle,run_out,discharge,recharge, &
+						subflow,precip,flux_q,porosity,rad_lat,rad_lon,current,previous,future,dt_real,delta_t,do_gle,      &
+						do_liq_table, evap_thresh) !mmm this took two separate delta_t values in original, current idea is first one was half the second one
 	
+        !if (js == 1) print *,'Checking QSurf 4:',surf_liq(39,16,current)/liq_dens !mmm
+
+        if(id_sphum_dt10 > 0) used = send_data(id_sphum_dt10,dt_tracers(:,:,:,nsphum),Time)
+
 	if (id_sub > 0) then
-	used = send_data (id_sub, subflow, Time, is, js)
+	used = send_data (id_sub, subflow, Time) !mmm , is, js)
 	endif
+
+        !if (js == 1) print *,'Checking Infil:',maxval(infiltration)
 	
 	if (id_infil > 0) then
-	used = send_data (id_infil, infiltration, Time, is, js)
+	used = send_data (id_infil, infiltration, Time) !mmm , is, js)
 	endif
 	
 	if (id_run > 0) then
-	used = send_data (id_run, run_out, Time, is, js)
+	used = send_data (id_run, run_out, Time) !mmm , is, js)
 	endif
 	
 	if (id_gle > 0) then
-	used = send_data (id_gle, gle, Time, is, js)
+	used = send_data (id_gle, gle, Time) !mmm , is, js)
 	endif
 
 	if (id_dis > 0) then
-	used = send_data (id_dis, discharge, Time, is,js)
+	used = send_data (id_dis, discharge, Time) !mmm , is,js)
 	endif  
 
 	if (id_rech > 0) then
-	used = send_data (id_rech, recharge, Time, is,js)
+	used = send_data (id_rech, recharge, Time) !mmm , is,js)
 	endif  
 
 	if (id_table > 0) then
-	used = send_data (id_table, liq_table(:,:,current)/liq_dens/porosity, Time, is,js)
+	used = send_data (id_table, liq_table(:,:,current)/liq_dens/porosity, Time) !mmm, is,js)
 	endif  
 
 	if (id_height > 0) then
-	used = send_data (id_height, height(:,:,current), Time, is,js)
+	used = send_data (id_height, height(:,:,current), Time) !mmm , is,js)
 	endif  
 
 	if (id_res > 0) then
-	used = send_data (id_res, run_res(:,:,current)/liq_dens, Time, is,js)
+	used = send_data (id_res, run_res(:,:,current)/liq_dens, Time) !mmm , is,js)
 	endif 
 
 	if (id_qsfc > 0) then
-	used = send_data (id_qsfc, surf_liq(:,:,current)/liq_dens,Time,is,js) 
+	used = send_data (id_qsfc, surf_liq(:,:,current)/liq_dens,Time) !mmm ,is,js) 
 	endif 
 
 	if (first_physics_call) first_physics_call = .false.

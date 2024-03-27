@@ -70,6 +70,7 @@ def git_run_in_directory(GFDL_BASE_DIR, dir_in):
         baked_git_fn = git.bake('-C', dir_in)
     except:
         codedir_git = git.bake('--git-dir='+GFDL_BASE_DIR+'/.git', '--work-tree='+GFDL_BASE_DIR)
+        print(codedir_git.log('-1', '--format="%H"'))
         git_test = codedir_git.log('-1', '--format="%H"').stdout
         baked_git_fn = git.bake('--git-dir='+dir_in+'/.git', '--work-tree='+dir_in)        
         

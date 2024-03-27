@@ -1,0 +1,22 @@
+#!/bin/csh -f
+
+#Runscript to use in Hoffman2 at UCLA
+#SGE-specific settings
+#$ -l highp,h_data=3G,h_rt=72:00:00,arch=intel-gold-6140
+#$ -V
+#$ -cwd
+#$ -m abe
+
+# -q mitch_pod_gold.q
+
+#Minimal runscript for atmospheric dynamical cores
+set echo
+#--------------------------------------------------------------------------------------------------------
+# define variables
+set basedir   = ~/hab_proj/Isca/exp/myexps # A base directory with code
+set exp_file  = fan_es0_1p5.py
+set condadir  = ~/miniconda/bin                         # Conda directory
+##--------------------------------------------------------------------------------------------------------
+
+source $condadir/activate.csh isca_env
+python $basedir/$exp_file

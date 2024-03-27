@@ -108,6 +108,10 @@ integer :: id_ps, id_u, id_v, id_t, id_vor, id_div, id_omega, id_wspd, id_slp
 integer :: id_pres_full, id_pres_half, id_zfull, id_zhalf, id_vort_norm, id_EKE
 integer :: id_uu, id_vv, id_tt, id_omega_omega, id_uv, id_omega_t, id_vw, id_uw, id_ut, id_vt, id_v_vor, id_uz, id_vz, id_omega_z
 integer, allocatable, dimension(:) :: id_tr, id_utr, id_vtr, id_wtr !extra advection diags added by RG
+
+!mmm checking sphum
+integer :: id_sphum5
+
 real :: gamma, expf, expf_inverse
 character(len=8) :: mod_name = 'dynamics'
 integer, dimension(4) :: axis_id
@@ -1708,6 +1712,10 @@ do ntr=1,num_tracers
   id_wtr(ntr) = register_diag_field(mod_name, trim(tname)//trim('_w'), axes_3d_full, Time, trim(longname)//trim(' x w'), trim(units)//trim(' m/s')) !Add additional diagnostics RG
 enddo
 
+!mmm checking sphum
+id_sphum5 = register_diag_field ( mod_name, 'sphum5', axes_3d_full, Time, &
+                  'Current Specific Humidity Check 5', 'kg/kg')
+
 id_vort_norm = register_diag_field(mod_name, 'vort_norm', Time, 'vorticity norm', '1/(m*sec)')
 id_EKE       = register_diag_field(mod_name, 'EKE', Time, 'eddy kinetic energy', 'J/m^2')
 
@@ -1870,6 +1878,9 @@ if(id_EKE > 0) then
   EKE = mass_weighted_global_integral(.5*(worka3d**2 + workb3d**2), p_surf)
   used = send_data(id_EKE, EKE, Time)
 endif
+
+!mmm checking sphum
+if(id_sphum5 > 0) used = send_data(id_sphum5, tr_grid(:,:,:,time_level,1), Time)
 
 return
 end subroutine spectral_diagnostics

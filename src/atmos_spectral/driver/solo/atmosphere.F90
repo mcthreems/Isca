@@ -110,7 +110,7 @@ type(time_type) :: Time_step
 !mmm Sphum check outputs
 logical :: used
 integer, dimension(4) :: axes
-integer :: id_sphum2_current, id_sphum2_future, id_sphum3_current, id_sphum3_future, id_sphum4_current, id_sphum4_future
+integer :: id_sphum2, id_sphum3, id_sphum4
 
 !=================================================================================================================================
 contains
@@ -188,18 +188,12 @@ call get_surf_geopotential(surf_geopotential)
 
 !mmm Sphum check outputs
 axes = get_axis_id()
-id_sphum2_current = register_diag_field ( mod_name, 'sphum2_current', axes(1:3), Time, &
-                  'Current Specific Humidity Check 2', 'kg/kg')
-id_sphum2_future = register_diag_field ( mod_name, 'sphum2_future', axes(1:3), Time, &
-                  'Future Specific Humidity Check 2', 'kg/kg')
-id_sphum3_current = register_diag_field ( mod_name, 'sphum3_current', axes(1:3), Time, &
-                  'Current Specific Humidity Check 3', 'kg/kg')
-id_sphum3_future = register_diag_field ( mod_name, 'sphum3_future', axes(1:3), Time, &
-                  'Future Specific Humidity Check 3', 'kg/kg')
-id_sphum4_current = register_diag_field ( mod_name, 'sphum4_current', axes(1:3), Time, &
-                  'Current Specific Humidity Check 4', 'kg/kg')
-id_sphum4_future = register_diag_field ( mod_name, 'sphum4_future', axes(1:3), Time, &
-                  'Future Specific Humidity Check 4', 'kg/kg')
+id_sphum2 = register_diag_field ( mod_name, 'sphum2', axes(1:3), Time, &
+                  'Current Specific Humidity Tendency Check 2', 'kg/kg/s')
+id_sphum3 = register_diag_field ( mod_name, 'sphum3', axes(1:3), Time, &
+                  'Current Specific Humidity Tendency Check 3', 'kg/kg/s')
+id_sphum4 = register_diag_field ( mod_name, 'sphum4', axes(1:3), Time, &
+                  'Current Specific Humidity Tendency Check 4', 'kg/kg/s')
 
 !--------------------------------------------------------------------------------------------------------------------------------
 file = 'INPUT/atmosphere.res.nc'
@@ -233,6 +227,7 @@ else
   previous = 1; current = 1
   call get_initial_fields(ug(:,:,:,1), vg(:,:,:,1), tg(:,:,:,1), psg(:,:,1), grid_tracers(:,:,:,1,:))
 endif
+
 !--------------------------------------------------------------------------------------------------------------------------------
 if(dry_model) then
   call compute_pressures_and_heights(tg(:,:,:,current), psg(:,:,current), surf_geopotential, &
@@ -319,8 +314,7 @@ else
                  dt_tg(:,:,:         ),   dt_tracers(:,:,:,:), z_full(:,:,:,current))
 endif
 
-if(id_sphum2_current     > 0) used = send_data(id_sphum2_current, grid_tracers(:,:,:,1,1), Time) !mmm
-if(id_sphum2_future      > 0) used = send_data(id_sphum2_future, grid_tracers(:,:,:,2,1), Time) !mmm
+if(id_sphum2     > 0) used = send_data(id_sphum2, dt_tracers(:,:,:,1), Time) !mmm
 
 if(previous == current) then
   future = num_time_levels + 1 - current
@@ -333,8 +327,7 @@ call spectral_dynamics(Time, psg(:,:,future), ug(:,:,:,future), vg(:,:,:,future)
                        dt_psg, dt_ug, dt_vg, dt_tg, dt_tracers, wg_full, &
                        p_full(:,:,:,current), p_half(:,:,:,current), z_full(:,:,:,current))
 
-if(id_sphum3_current     > 0) used = send_data(id_sphum3_current, grid_tracers(:,:,:,1,1), Time) !mmm
-if(id_sphum3_future      > 0) used = send_data(id_sphum3_future, grid_tracers(:,:,:,2,1), Time) !mmm
+if(id_sphum3     > 0) used = send_data(id_sphum3, dt_tracers(:,:,:,1), Time) !mmm
 
 if(dry_model) then
   call compute_pressures_and_heights(tg(:,:,:,future), psg(:,:,future), surf_geopotential, &
@@ -345,8 +338,7 @@ else
                                      grid_tracers(:,:,:,future,nhum))
 endif
 
-if(id_sphum4_current     > 0) used = send_data(id_sphum4_current, grid_tracers(:,:,:,1,1), Time) !mmm
-if(id_sphum4_future      > 0) used = send_data(id_sphum4_future, grid_tracers(:,:,:,2,1), Time) !mmm
+if(id_sphum4     > 0) used = send_data(id_sphum4, dt_tracers(:,:,:,1), Time) !mmm
 
 call spectral_diagnostics(Time_next, psg(:,:,future), ug(:,:,:,future), vg(:,:,:,future), &
                           tg(:,:,:,future), wg_full, grid_tracers(:,:,:,:,:), future)

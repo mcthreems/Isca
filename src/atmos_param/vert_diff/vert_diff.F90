@@ -444,7 +444,8 @@ integer, intent(in),    dimension(:,:), optional :: kbot
 
 !checksums! write(outunit,'("CHECKSUM::",A32," = ",Z20)')'surf_delta_q',mpp_chksum(surf_delta_q)
 !checksums! write(outunit,'("CHECKSUM::",A32," = ",Z20)')'f_q_global',mpp_chksum(f_q_global(is:ie,js:je,:))
-
+!mmm
+!if (js == 1) print *,'CHECKSUM: f_q_global ',mpp_chksum(f_q_global(is:ie,js:je,:))
  call vert_diff_up (delt ,                              &
                     e_global          (is:ie,js:je,:) , &
                     f_q_global        (is:ie,js:je,:) , &
@@ -452,7 +453,8 @@ integer, intent(in),    dimension(:,:), optional :: kbot
                     dt_q, kbot )
 
 !checksums! write(outunit,'("CHECKSUM::",A32," = ",Z20)')'dt_q',mpp_chksum(dt_q)
-
+!mmm
+!if (js == 1) print *,'CHECK: tracers ',tracers(1)%do_vert_diff
  do n = 1,size(dt_tr,4)
     ! skip tracers if diffusion scheme turned off
     if (tracers(n)%do_vert_diff.and.tracers(n)%do_surf_exch) then

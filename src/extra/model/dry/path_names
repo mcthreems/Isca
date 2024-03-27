@@ -196,3 +196,6 @@ shared/topography/gaussian_topog.F90
 shared/topography/topography.F90
 shared/tracer_manager/tracer_manager.F90
 shared/tridiagonal/tridiagonal.F90
+atmos_param/tam_surface/tam_hydrology.F90
+atmos_param/tam_surface/tam_surface_hydro.F90
+atmos_param/tam_surface/tam_surface_flux_hydro.F90

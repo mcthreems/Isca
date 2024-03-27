@@ -245,8 +245,8 @@
           tem(2) = tem(1)-tinrc
           tem(3) = tem(1)+tinrc
           es = compute_es_k (tem, TFREEZE)
-          TABLE(i) = es(1)
-          DTABLE(i) = (es(3)-es(2))*tfact
+          TABLE(i) = ES0*es(1)                   !mmm added ES0 parameter here
+          DTABLE(i) = ES0*(es(3)-es(2))*tfact
         enddo
 
       endif !if (do_simple)

@@ -268,8 +268,14 @@ logical :: earthday_multiple = .false.
 !mmm adding these to constants namelist
 real, public :: ES0 = ES0_def
 real, public :: liq_dens = DENS_H2O
+real, public :: bparam = 1.0   !mmm beta param from Fan et al, as a namelist variable
+logical, public :: use_q_max = .false. !mmm options for coupling the surface liquids to the apparent surface specific humidity
+logical, public :: use_tanh_scale = .false.
+logical, public :: do_tanh_0 = .false.
 
-namelist/constants_nml/ radius, grav, omega, orbital_period, pstd, pstd_mks, rdgas, kappa, solar_const, earthday_multiple, es0, liq_dens
+namelist/constants_nml/ radius, grav, omega, orbital_period, pstd, pstd_mks, &
+rdgas, kappa, solar_const, earthday_multiple, es0, liq_dens, bparam, use_q_max, &
+use_tanh_scale, do_tanh_0
 
 !-----------------------------------------------------------------------
 ! version and tagname published

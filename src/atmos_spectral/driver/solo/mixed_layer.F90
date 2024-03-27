@@ -127,6 +127,8 @@ character(len=256) :: flux_lhe_anom_field_name = 'flux_lhe_anom'
 
 logical :: var_hcap = .false. !mmm variable heat capacity flag
 logical :: var_alb  = .false. !mmm variable albedo flag
+real    :: land_lat = 0.      !mmm latitude below which grid cells use land values
+real    :: land_thresh = 0.   !mmm depth of buckets over land when using land_lat
 
 namelist/mixed_layer_nml/ evaporation, depth, qflux_amp, qflux_width, tconst,&
                               delta_T, prescribe_initial_dist,albedo_value,  &
@@ -145,7 +147,7 @@ namelist/mixed_layer_nml/ evaporation, depth, qflux_amp, qflux_width, tconst,&
                               ice_albedo_value, specify_sst_over_ocean_only, &
                               ice_concentration_threshold,                   &
                               add_latent_heat_flux_anom,flux_lhe_anom_file_name,&
-                              flux_lhe_anom_field_name, var_hcap, var_alb !mmm variable heat capacity and albedo flags
+                              flux_lhe_anom_field_name,var_hcap,var_alb,land_lat,land_thresh !mmm variable heat capacity and albedo flags
 
 !=================================================================================================================================
 
@@ -163,7 +165,9 @@ integer ::                                                                    &
      id_heat_cap,          &   ! heat capacity
      id_albedo,            &   ! mj albedo
      id_ice_conc,          &   ! st ice concentration
-     id_delta_t_surf
+     id_delta_t_surf,      &
+     id_fnq_term,          &   !mmm
+     id_enq_term               !mmm
 
 real, allocatable, dimension(:,:)   ::                                        &
      ocean_qflux,           &   ! Q-flux
@@ -210,13 +214,13 @@ real inv_cp_air
 contains
 !=================================================================================================================================
 
-subroutine mixed_layer_init(is, ie, js, je, num_levels, t_surf, bucket_depth, axes, Time, albedo, rad_lonb_2d,rad_latb_2d, land, restart_file_bucket_depth)
+subroutine mixed_layer_init(is, ie, js, je, num_levels, t_surf, bucket_depth, axes, Time, albedo, rad_lonb_2d, rad_latb_2d, rad_lat, land, restart_file_bucket_depth)
 
 type(time_type), intent(in)       :: Time
 real, intent(out), dimension(:,:) :: t_surf, albedo
 real, intent(out), dimension(:,:,:) :: bucket_depth
 integer, intent(in), dimension(4) :: axes
-real, intent(in), dimension(:,:) :: rad_lonb_2d, rad_latb_2d
+real, intent(in), dimension(:,:) :: rad_lonb_2d, rad_latb_2d, rad_lat
 integer, intent(in) :: is, ie, js, je, num_levels
 
 logical, intent(in), dimension(:,:) :: land
@@ -365,6 +369,11 @@ else
 endif
 id_delta_t_surf = register_diag_field(mod_name, 'delta_t_surf',        &
                                  axes(1:2), Time, 'change in sst','K')
+id_fnq_term = register_diag_field ( mod_name, 'fnq_term', axes(1:2), Time, & !mmm
+                  'First Term from Evaporation Coupling','kg/kg')
+id_enq_term = register_diag_field ( mod_name, 'enq_term', axes(1:2), Time, &
+                  'Second Term from Evaporation Coupling','kg/kg')
+
 if (update_albedo_from_ice) then
 	id_albedo = register_diag_field(mod_name, 'albedo',    &
                                  axes(1:2), Time, 'surface albedo', 'none')
@@ -487,9 +496,9 @@ albedo_initial=albedo
 if (update_albedo_from_ice) then
 	call interpolator_init( ice_interp, trim(ice_file_name)//'.nc', rad_lonb_2d, rad_latb_2d, data_out_of_bounds=(/CONSTANT/) )
         call read_ice_conc(Time)
-	call albedo_calc(albedo,Time,bucket_depth(:,:,1)) !mmm just to fit the new function structure
+	call albedo_calc(albedo,Time,bucket_depth(:,:,1),rad_lat_2d) !mmm just to fit the new function structure
 else if (var_alb) then
-        call albedo_calc(albedo,Time,bucket_depth(:,:,1)) !mmm do dynamic albedo
+        call albedo_calc(albedo,Time,bucket_depth(:,:,1),rad_lat_2d) !mmm do dynamic albedo
 else
 	if ( id_albedo > 0 ) used = send_data ( id_albedo, albedo )
 endif
@@ -536,18 +545,18 @@ endif
             enddo
          endif
 	else  !trim(land_option) .eq. 'input'
-                if (var_hcap) then !mmm adjust heat capacity based on bucket depth
-                        where(bucket_depth(:,:,1) .lt. depth) land_sea_heat_capacity = bucket_depth(:,:,1)*RHO_CP 
-	                where(land_sea_heat_capacity .lt. land_h_capacity_prefactor*depth*RHO_CP) land_sea_heat_capacity = land_h_capacity_prefactor*depth*RHO_CP
-                        if ( id_heat_cap > 0 ) used = send_data ( id_heat_cap,land_sea_heat_capacity,Time )
-                else
                         where(land) land_sea_heat_capacity = land_h_capacity_prefactor*land_sea_heat_capacity
-	        endif
         endif !end of if (trim(land_option) .ne. 'input')
     endif !end of if(.not.do_sc_sst)
 
-if (.not. var_hcap) then !mmm
- if ( id_heat_cap > 0 ) used = send_data ( id_heat_cap, land_sea_heat_capacity )
+if (var_hcap) then !mmm adjust heat capacity based on bucket depth
+     where(bucket_depth(:,:,1) .ge. depth) land_sea_heat_capacity = depth*RHO_CP
+     where(abs(rad_lat_2d*180/PI) .le. land_lat .and. bucket_depth(:,:,1) - land_thresh .lt. depth) land_sea_heat_capacity = (bucket_depth(:,:,1) - land_thresh)*RHO_CP
+     where(bucket_depth(:,:,1) .lt. depth) land_sea_heat_capacity = bucket_depth(:,:,1)*RHO_CP
+     where(land_sea_heat_capacity .lt. land_h_capacity_prefactor*depth*RHO_CP) land_sea_heat_capacity = land_h_capacity_prefactor*depth*RHO_CP
+     if ( id_heat_cap > 0 ) used = send_data (id_heat_cap,land_sea_heat_capacity,Time)
+else
+     if ( id_heat_cap > 0 ) used = send_data (id_heat_cap,land_sea_heat_capacity)
 endif
 !s end surface heat capacity calculation
 
@@ -576,7 +585,7 @@ subroutine mixed_layer (                                               &
      dhdt_atm,                                                         &
      dedq_atm,                                                         &
      albedo_out,& 
-     bucket_depth) !mmm adding bucket depth here for dynamic heat capacity/albedo
+     bucket_depth,rad_lat) !mmm adding bucket depth here for dynamic heat capacity/albedo
 
 ! ---- arguments -----------------------------------------------------------
 type(time_type), intent(in)       :: Time, Time_next
@@ -592,7 +601,7 @@ real, intent(in) :: dt
 real, intent(out), dimension(:,:) :: albedo_out
 type(surf_diff_type), intent(inout) :: Tri_surf
 logical, dimension(size(land_mask,1),size(land_mask,2)) :: land_ice_mask
-real, intent(in), dimension(:,:) :: bucket_depth !mmm
+real, intent(in), dimension(:,:) :: bucket_depth,rad_lat !mmm
 
 if(.not.module_is_initialized) then
   call error_mesg('mixed_layer','mixed_layer module is not initialized',FATAL)
@@ -608,7 +617,7 @@ else
 	land_ice_mask=land_mask
 endif
 
-call albedo_calc(albedo_out,Time_next,bucket_depth) !mmm bucket_depth for dynamic albedo
+call albedo_calc(albedo_out,Time_next,bucket_depth,rad_lat) !mmm bucket_depth for dynamic albedo
 
 !s Add latent heat flux anomalies before any of the calculations take place
 
@@ -692,6 +701,9 @@ if ((.not.do_sc_sst).or.(do_sc_sst.and.specify_sst_over_ocean_only)) then
         !mmm dynamic mixed layer
         if (var_hcap) then !mmm adjust heat capacity based on bucket depth
          dynamic_heat_capacity = depth*RHO_CP
+         if (land_lat > 0.) then
+          where(abs(rad_lat*180/PI) <= land_lat .and. bucket_depth-land_thresh .lt. depth) dynamic_heat_capacity = (bucket_depth-land_thresh)*RHO_CP
+         endif
          where(bucket_depth .lt. depth) dynamic_heat_capacity = bucket_depth*RHO_CP
          where(dynamic_heat_capacity .lt. land_h_capacity_prefactor*depth*RHO_CP) dynamic_heat_capacity = land_h_capacity_prefactor*depth*RHO_CP
          eff_heat_capacity = dynamic_heat_capacity + t_surf_dependence * dt
@@ -731,22 +743,29 @@ if(id_flux_lhe > 0) used = send_data(id_flux_lhe, HLV * flux_q_total, Time_next)
 if(id_flux_oceanq > 0)   used = send_data(id_flux_oceanq, ocean_qflux, Time_next)
 
 if(id_delta_t_surf > 0)   used = send_data(id_delta_t_surf, delta_t_surf, Time_next)
+if (id_fnq_term > 0) used = send_data(id_fnq_term, fn_q, Time_next) !mmm
+if (id_enq_term > 0) used = send_data(id_enq_term, en_q * delta_t_surf, Time_next) !mmm
 
 end subroutine mixed_layer
 
 !=================================================================================================================================
 
-subroutine albedo_calc(albedo_inout,Time,bucket_depth) !mmm need bucket_depth for dynamic albedo
+subroutine albedo_calc(albedo_inout,Time,bucket_depth,rad_lat) !mmm need bucket_depth for dynamic albedo
 
 real, intent(out), dimension(:,:) :: albedo_inout
 type(time_type), intent(in)       :: Time
-real, intent(in), dimension(:,:) :: bucket_depth !mmm
+real, intent(in), dimension(:,:) :: bucket_depth,rad_lat !mmm
 
 albedo_inout=albedo_initial
 
 !mmm dynamic albedo with bucket_depth
 if (var_alb) then
  where(bucket_depth .eq. 0) albedo_inout = land_albedo_prefactor * albedo_inout
+ if ( id_albedo > 0 ) used = send_data ( id_albedo, albedo_inout, Time )
+endif
+
+if (land_lat > 0.) then
+ where(abs(rad_lat*180/PI) .le. land_lat) albedo_inout = land_albedo_prefactor * albedo_inout
  if ( id_albedo > 0 ) used = send_data ( id_albedo, albedo_inout, Time )
 endif
 

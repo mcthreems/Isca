@@ -1,0 +1,28 @@
+#!/bin/csh -f
+
+#Runscript to use in Hoffman2 at UCLA
+#SGE-specific settings
+#$ -l highp,h_data=5G,h_rt=72:00:00,arch=intel-gold-6140
+## $ -V
+#$ -cwd
+#$ -m abe
+
+# -q mitch_pod_gold.q
+
+#Minimal runscript for atmospheric dynamical cores
+set echo
+#--------------------------------------------------------------------------------------------------------
+# define variables
+set basedir   = ~/hab_proj/Isca/exp/myexps # A base directory with code
+set exp_file  = iscahydro_qdef_lat_35_rot_4_xi_0.5.py
+set condadir  = ~/miniconda/bin                         # Conda directory
+# ##--------------------------------------------------------------------------------------------------------
+
+source $condadir/activate.csh isca_env
+setenv GFDL_BASE /u/home/m/mmckinne/hab_proj/Isca
+setenv GFDL_ENV  emps-hoff
+setenv GFDL_SOC  /u/home/m/mmckinne/hab_proj/Isca/src/atmos_param/socrates/src/trunk
+setenv GFDL_WORK /u/scratch/m/mmckinne/isca_work
+setenv GFDL_DATA /u/scratch/m/mmckinne/isca_data
+
+python $basedir/$exp_file

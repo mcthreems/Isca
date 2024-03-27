@@ -21,7 +21,7 @@ use field_manager_mod,only: MODEL_ATMOS
 use tracer_manager_mod,only:get_tracer_index
 use time_manager_mod, only: time_type
 use vert_diff_mod,    only: surf_diff_type
-use constants_mod,    only: stefan, cp_air, HLv
+use constants_mod,    only: stefan, cp_air, HLv, Rdgas, rhoair, grav, RHO_CP
 
 implicit none
 private
@@ -34,20 +34,22 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
 
 !mmm Most likely some of these will need to be changed for Earth
   integer :: nlayers       = 10        !Number of ground layers
-  real :: cnfac            = .5        !C-N parameter "alpha" (.5 or 1)
+  real :: cnfac            = 0.5       !C-N parameter "alpha" (.5 or 1)
   real :: capr             = 1.0 !.34  !Factor for surface depth, 0<.34<1
-  real :: thermal_cond_reg = 0.1       !Thermal conductivity (W/m/K), porous icy regolith = .1, rock-ice = 3.5
-  real :: thermal_cond_liq = 0.3
-  real :: c_v_reg          = 1.12e6    !Volumetric heat capacity [J/m3/K],c_v=c_p*rho=1400*800
-  real :: c_v_liq          = 1.8e6     !Volumetric heat capacity [J/m3/J],c_v=c_p*rho=4000*450
-  
- 
+  real :: thermal_cond_reg = 3.5       !Thermal conductivity (W/m/K), porous icy regolith = .1, rock-ice = 3.5
+  real :: thermal_cond_liq = 0.6       !mmm changed to be for water (at 20C)
+  real :: c_v_reg          = 1.82e6    !Volumetric heat capacity [J/m3/K],c_v=c_p*rho=700*2600 !mmm based on average rock
+  real :: c_v_liq          = 4.18e6    !Volumetric heat capacity [J/m3/K],c_v=c_p*rho=4180*1000 !mmm based on water
+  real :: ml_depth         = 40.0      !mmm mixed layer depth, in meters. Default is 40 to match Isca
+  real :: ml_thresh        = 5.0       !mmm threshold depth below which default surface scheme is used, default is 5m because that's about what the default scheme seems to approximate
+  logical :: do_mixed_layer   = .false.   !mmm flag for using a mixed-layer approximation when surface depth is >= ml_depth
+
   !Initial surface temperature (cold start)
-  real    :: tsurf_init       = 273.15 !mmm made this freezing point, was 93 before (for Titan). Can be changed later
-  
+  real    :: tsurf_init       = 273.15 !mmm made this freezing point, was 93 before (for Titan). Can be changed later  
+
   namelist /tam_surface_nml/ nlayers, cnfac, capr,                &
                                thermal_cond_reg, thermal_cond_liq,  & 
-                               c_v_reg, c_v_liq, tsurf_init
+                               c_v_reg, c_v_liq, tsurf_init, ml_depth, do_mixed_layer 
                                
   integer  :: id_zgrnd, id_hf, id_tgrnd, sphum                           
   
@@ -126,6 +128,7 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
     tam_tgrnd(:,:,:)  = tsurf_init
   end if
 
+  !print *,'Check 1',tsurf_init
 !-----------------------------------------------------------------------
 ! Create subsurface axis ID and register fields
 !-----------------------------------------------------------------------
@@ -146,6 +149,9 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
 
   module_is_initialized = .true.
 
+!print *,'Check thermal_cond_reg:',thermal_cond_reg
+!print *,'Check thermal_cond_liq:',thermal_cond_liq
+
 !-----------------------------------------------------------------------
 
   end subroutine tam_surface_init
@@ -159,19 +165,21 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
                         dedq_atm, Surf_diff,               &
                         var_surf_prop, threshold_liq, liqch4_dens, &
                         convective_lakes, do_methane_table, &
-                        table_height, topo, porosity)
+                        table_height, topo, porosity, pdp, do_direct_delta_tr, &
+                        fnq_term, enq_term) !mmm
                             
    integer, intent(in)                :: is, js
    real, intent(in)                   :: dt
    type(surf_diff_type), intent(inout):: Surf_diff
    type(time_type),      intent(in)   :: Time
-   real, dimension(:,:), intent(in)   :: radflx, flux_t, flux_q
+   real, dimension(:,:), intent(in)   :: radflx, flux_t, flux_q, pdp
    real, dimension(:,:), intent(in)   :: dhdt_surf, dedt_surf, dedq_surf
    real, dimension(:,:), intent(in)   :: dhdt_atm, dedq_atm
    real, dimension(:,:), intent(in)   :: liquid, albedoi 
    real, dimension(:,:), intent(in)   :: table_height, topo
-   logical,              intent(in)   :: var_surf_prop,convective_lakes,do_methane_table
+   logical,              intent(in)   :: var_surf_prop,convective_lakes,do_methane_table,do_direct_delta_tr !mmm
    real,                 intent(in)   :: threshold_liq, liqch4_dens, porosity
+   real, dimension(:,:), intent(out)  :: fnq_term, enq_term !mmm
    
 ! Local: --------------------------------------------------------------- 
    integer :: i, j, k, used
@@ -188,6 +196,8 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
    real, dimension(0:nlayers) :: dz !layer thickness
    real, dimension(0:nlayers) :: cv !heat capacity (J/m2/K)
    real, dimension(0:nlayers) :: tk !thermal conductivity
+
+   real :: eff_heat_capacity, delta_t_surf !mmm mixed-layer variables
 
 !-----------------------------------------------------------------------
 ! Net heat flux into the surface; derivatives of flux wrt temperature  
@@ -214,7 +224,9 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
   
   hf    = radflx - alpha_t*cp_air - alpha_q*HLv - alpha_lw
   dhfdT = -(beta_t*cp_air + beta_q*HLv + beta_lw)
-  
+
+  !if(js == 1) print *,'Checking temp factors 1:',maxval(hf) !mmm  
+ 
 !-----------------------------------------------------------------------
 ! Set up layer depths  
 !----------------------------------------------------------------------- 
@@ -243,6 +255,21 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
   do i = 1,size(tam_tgrnd,1)
     do j = 1,size(tam_tgrnd,2)
     
+      if (liquid(i,j)/liqch4_dens .ge. ml_depth .and. do_mixed_layer) then
+        
+       eff_heat_capacity = ml_depth*RHO_CP - dhfdT(i,j) * dt
+       delta_t_surf = hf(i,j)  * dt / eff_heat_capacity
+       !if(js == 1  .and. i==1 .and. j==1) print *,'Checking Temp Calc:',delta_t_surf
+       tam_tgrnd(i+is-1,j+js-1,1) = tam_tgrnd(i+is-1,j+js-1,1) + delta_t_surf
+
+      else if (liquid(i,j)/liqch4_dens < ml_depth .and. liquid(i,j)/liqch4_dens > ml_thresh .and. do_mixed_layer) then !mmm use 5m as the threshold here because that seems to be what the default scheme is equivalent to
+     
+       eff_heat_capacity = liquid(i,j)/liqch4_dens*RHO_CP - dhfdT(i,j) * dt
+       delta_t_surf = hf(i,j)  * dt / eff_heat_capacity
+       tam_tgrnd(i+is-1,j+js-1,1) = tam_tgrnd(i+is-1,j+js-1,1) + delta_t_surf
+
+      else
+ 
       do k = 1, nlayers
         cv(k) = dz(k) * c_v_reg
         tk(k) = thermal_cond_reg
@@ -253,11 +280,13 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
           if (z(k) .lt. liquid(i,j)/liqch4_dens) then 
               cv(k) = dz(k) * c_v_liq
               tk(k) = thermal_cond_liq
+              !if(js == 1  .and. i==1 .and. j==1) print *,'Checking Temp Calc:',cv(k)
           else if (do_methane_table .and. (z(k) .gt. (liquid(i,j)/liqch4_dens + &
                      max(0.0,topo(i,j)-table_height(i,j))) ) ) then 
               cv(k) = dz(k)* (c_v_reg*(1.0-porosity) + c_v_liq*porosity)
               tk(k) = thermal_cond_reg*(1.0-porosity) + thermal_cond_liq*porosity
           end if
+          !cv(1) = min(ml_depth,liquid(i,j)/liqch4_dens) * c_v_liq + cv(1)    !mmm adding a step to incorporate the heat capacity of surface water
 
         endif
       enddo
@@ -304,7 +333,8 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
       bt(k) = 1. + fact(k)*((1.-cnfac)*tk(k)/dzp - dhfdT(i,j))
       ct(k) =  -(1.-cnfac)*fact(k)*tk(k)/dzp
       rt(k) = t_ground(k) +  fact(k)*( hf(i,j) - dhfdT(i,j)*t_ground(k) + cnfac*fn(k) )
-  
+      !if(js == 1  .and. i==1 .and. j==size(tam_tgrnd,2)) print *,'Checking temp factors 1:',fact(k)*(hf(i,j)+fn(k))/(1-fact(k)*dhfdT(i,j)) !mmm 
+      !if(js == 1  .and. i==1 .and. j==size(tam_tgrnd,2)) print *,'Checking temp factors 2:',t_ground(k)
       do k = 2, nlayers - 1
         dzm = (z(k)-z(k-1))
         dzp = (z(k+1)-z(k))
@@ -330,11 +360,28 @@ public :: tam_surface_init, tam_surface_end, tam_surf_temp, tam_tgrnd
       call Tridiagonal (size(at), at, bt, ct, rt, &
                         t_ground(1:nlayers))
 
-      Surf_diff%delta_t(i,j) = fn_t(i,j) + en_t(i,j) * (t_ground(1) - tam_tgrnd(i+is-1,j+js-1,1))
-      Surf_diff%delta_tr(i,j,sphum) = fn_q(i,j) + en_q(i,j) * (t_ground(1) - tam_tgrnd(i+is-1,j+js-1,1))
-      
+      delta_t_surf = t_ground(1) - tam_tgrnd(i+is-1,j+js-1,1)
       tam_tgrnd(i+is-1,j+js-1,:) = t_ground(:)
-      
+
+      end if
+
+      if (do_direct_delta_tr) then
+       Surf_diff%delta_t(i,j) = fn_t(i,j)
+       Surf_diff%delta_tr(i,j,sphum) = fn_q(i,j) !mmm alternative calculation
+      else
+       Surf_diff%delta_t(i,j) = fn_t(i,j) + en_t(i,j) * delta_t_surf
+       Surf_diff%delta_tr(i,j,sphum) = fn_q(i,j) + en_q(i,j) * delta_t_surf
+      end if
+      !if(Surf_diff%delta_tr(i,j,sphum) .gt. 0.0) then
+        !print *,'anomalous delta: ',Surf_diff%delta_tr(i,j,sphum) !mmm
+        !print *,'fn_q: ',fn_q(i,j)
+        !print *,'en_q: ',en_q(i,j)
+        !print *,'tground: ',t_ground(1)
+        !print *,'tam_tgrnd: ',tam_tgrnd(i+is-1,j+js-1,1)
+      !end if 
+      !tam_tgrnd(i+is-1,j+js-1,:) = t_ground(:)
+      fnq_term(i+is-1,j+js-1) = fn_q(i,j)           !mmm outputting these terms
+      enq_term(i+is-1,j+js-1) = en_q(i,j) * delta_t_surf
     end do
   end do
   
@@ -395,7 +442,7 @@ end module tam_surface_mod
   
   
   
-  
+ 
   
   
   
